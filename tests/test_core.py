@@ -94,6 +94,20 @@ def test_pagos_seleccion():
         os.environ.pop(var, None)
 
 
+def test_voz_config():
+    from agentkit import voz
+
+    for var in ("GROQ_API_KEY", "OPENAI_API_KEY"):
+        os.environ.pop(var, None)
+    assert not voz.voz_configurada()
+    os.environ["OPENAI_API_KEY"] = "sk-test"
+    assert "openai.com" in voz._config()[0]
+    os.environ["GROQ_API_KEY"] = "gsk-test"
+    assert "groq.com" in voz._config()[0]  # Groq (gratis) tiene prioridad
+    for var in ("GROQ_API_KEY", "OPENAI_API_KEY"):
+        os.environ.pop(var, None)
+
+
 def test_herramientas_esquemas():
     from agentkit.herramientas import ESQUEMAS_BASE
 
@@ -136,6 +150,7 @@ if __name__ == "__main__":
     test_firma_meta()
     test_instagram_parse()
     test_pagos_seleccion()
+    test_voz_config()
     test_herramientas_esquemas()
     asyncio.run(_test_memory())
     print("OK — todos los self-checks pasaron")

@@ -100,10 +100,13 @@ Antes de empezar, dejame verificar que tu entorno esta listo...
      (retomar donde iba) o usar otro nombre. NUNCA sobreescribas sin preguntar
    - TODOS los comandos de las fases siguientes se ejecutan DESDE esa carpeta
      (`cd agentes/<nombre>` antes de pip, chat, uvicorn, git)
-3. Generar `agentes/<nombre>/requirements.txt`:
+3. Generar `agentes/<nombre>/requirements.txt` PINEANDO la última versión
+   (tag) del core — así el build de Docker/Railway es reproducible y
+   actualizar el agente = subir el tag en esta línea:
    ```
-   agentkit @ git+https://github.com/NicoCardona1106/agentkit.git
+   agentkit @ git+https://github.com/NicoCardona1106/agentkit.git@v0.3.0
    ```
+   (Verifica el último tag con `git tag` en el repo del core o en GitHub → Releases)
 4. `pip install -r requirements.txt` (desde la carpeta del agente)
 5. Confirmar: "Fase 1 completada — Entorno listo"
 
@@ -189,6 +192,12 @@ PREGUNTA 11 (opcional): ¿Quieres cobrar dentro del chat con links de pago?
 PREGUNTA 12 (opcional): ¿Número de WhatsApp del equipo para recibir avisos?
             (leads nuevos, tickets, clientes derivados, reporte diario)
             Si no tiene, se omite ADMIN_PHONE y los avisos van al log.
+
+PREGUNTA 13 (opcional): ¿Quieres que el agente entienda notas de voz?
+            Recomendado: Groq (GRATIS) — guiar: console.groq.com → crear cuenta
+            → API Keys → Create API Key → GROQ_API_KEY en el .env.
+            Alternativa: OpenAI (OPENAI_API_KEY, ~$0.006/min).
+            Si NO → el agente pedirá amablemente que le escriban el mensaje.
 ```
 
 Al terminar: "Fase 2 completada — Información del negocio recopilada"
@@ -474,5 +483,7 @@ python -m agentkit.chat                              # test local sin WhatsApp
 uvicorn agentkit.main:app --reload --port 8000       # servidor local
 python tests/test_core.py                            # self-check del core (solo repo AgentKit)
 docker compose up --build                            # producción local
-pip install --upgrade -r requirements.txt            # traer mejoras del core a un agente
+# Actualizar un agente al core más nuevo: subir el tag en requirements.txt
+# (ej: @v0.3.0 → @v0.4.0) y pip install -r requirements.txt; en Railway basta
+# con commitear ese cambio (el tag nuevo invalida la caché del build)
 ```

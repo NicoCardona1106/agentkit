@@ -37,7 +37,8 @@ app = FastAPI(title="AgentKit — WhatsApp AI Agent", version="1.0.0", lifespan=
 
 @app.get("/")
 async def health_check():
-    return {"status": "ok", "service": "agentkit"}
+    from agentkit import __version__
+    return {"status": "ok", "service": "agentkit", "version": __version__}
 
 
 @app.get("/webhook")
