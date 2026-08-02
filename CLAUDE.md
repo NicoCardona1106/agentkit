@@ -388,19 +388,35 @@ Recomienda dónde desplegar según el agente — EL USUARIO ELIGE:
 | Google Cloud Run | Mucho volumen pagando por uso | Requiere cuenta GCP |
 | VPS (Hetzner/DO) | Control total, costo fijo, varios agentes en una máquina | Tú administras todo (usa el docker-compose) |
 
-Si duda, usa Railway. Los pasos siguientes asumen Railway (adapta si eligió otro):
+Si duda, usa Railway. Los pasos siguientes asumen Railway (adapta si eligió
+otro). RECUERDA: tú ejecutas los comandos; el usuario solo hace los pasos de
+navegador contigo guiándolo click por click, confirmando cada uno.
 
-1. Subir la carpeta del agente a un repo propio de GitHub (privado):
-   ```bash
-   git init && git add . && git commit -m "feat: mi agente WhatsApp con AgentKit"
-   git remote add origin https://github.com/TU-USUARIO/mi-agente.git
-   git push -u origin main
-   ```
-2. Railway: New Project → Deploy from GitHub repo
-3. Variables en Railway: todas las del `.env` + `ENVIRONMENT=production` +
-   `PUBLIC_URL` (la URL que Railway asigna) + `DATABASE_URL` de PostgreSQL
-   (agregar el plugin PostgreSQL de Railway — memoria permanente)
-4. Webhook (según el canal):
+1. **GitHub** (el código debe vivir en un repo del usuario):
+   - Pregunta si tiene cuenta de GitHub. Si NO: guíalo a crearla en github.com
+     (Sign up → email → contraseña → verificar correo)
+   - Verifica si `gh` está instalado y autenticado (`gh auth status`).
+     Si falta login: dile que escriba `! gh auth login` en el prompt y
+     acompáñalo (GitHub.com → HTTPS → Login with a web browser → pegar el
+     código en el navegador)
+   - Luego TÚ creas y subes el repo desde la carpeta del agente:
+     ```bash
+     git init && git add . && git commit -m "feat: mi agente con AgentKit"
+     gh repo create mi-agente --private --source . --push
+     ```
+2. **Railway**: guíalo a crear cuenta en railway.app (botón "Login" →
+   "Login with GitHub" — reutiliza la cuenta que acaba de crear). Luego:
+   New Project → "Deploy from GitHub repo" → autorizar Railway en GitHub →
+   elegir el repo del agente
+3. **Variables**: en Railway → el servicio → pestaña "Variables" → "Raw Editor".
+   Genera TÚ el bloque completo listo para pegar (los valores reales del .env,
+   sin los comentarios) e inclúyele: `ENVIRONMENT=production` y `PUBLIC_URL`
+   (la URL pública: Settings → Networking → "Generate Domain" si no existe)
+4. **PostgreSQL** (memoria permanente): en el proyecto de Railway →
+   botón "+ New" → Database → PostgreSQL. Luego en las variables del servicio
+   del agente agregar `DATABASE_URL` con referencia: `${{Postgres.DATABASE_URL}}`
+5. Webhook (según el canal — guía click por click y al final VERIFICA tú con
+   `curl https://tu-app.up.railway.app/` que el servidor responde):
    - META (WhatsApp): developers.facebook.com → WhatsApp → Configuration →
      Callback `https://tu-app.up.railway.app/webhook`, Verify Token el del .env,
      suscribirse al campo "messages"
@@ -410,8 +426,11 @@ Si duda, usa Railway. Los pasos siguientes asumen Railway (adapta si eligió otr
      "Instagram" → Callback `https://tu-app.up.railway.app/webhook`, Verify
      Token el del .env, suscribirse al campo "messages"; la página de Facebook
      debe estar suscrita a la app
-5. (Opcional) Reporte diario: crear un cron (Railway cron o cron-job.org) que
+6. (Opcional) Reporte diario: crear un cron (Railway cron o cron-job.org) que
    llame `https://tu-app.up.railway.app/reporte?token=REPORTE_TOKEN` a la hora deseada.
+7. Prueba final EN VIVO: pídele al usuario que escriba al número/cuenta del
+   agente desde su celular y confirma que responde. Solo entonces declara el
+   deploy terminado.
 
 Resumen final: listar lo construido, las herramientas activas y los comandos útiles.
 
@@ -421,12 +440,21 @@ Resumen final: listar lo construido, las herramientas activas y los comandos út
 
 1. Habla SIEMPRE en español
 2. UNA pregunta a la vez
-3. NUNCA hardcodees API keys — todo via .env
-4. NUNCA modifiques el paquete `agentkit/` para un agente específico — la
+3. **Asume que el usuario NO sabe programar ni usar la terminal.**
+   - EJECUTA TÚ todos los comandos (git, pip, gh, uvicorn) — nunca le pidas
+     que copie comandos en la terminal, salvo los interactivos (logins), y en
+     ese caso dale el comando exacto y explícale qué va a ver
+   - Para pasos en el navegador (Railway, Meta, Twilio, Stripe…): guía click
+     por click ("entra a X → botón Y arriba a la derecha → pestaña Z") y
+     espera su confirmación en cada paso antes de seguir
+   - Verifica cada paso con un comando o pregunta antes de avanzar; si algo
+     falla, diagnostica tú y propón la solución
+4. NUNCA hardcodees API keys — todo via .env
+5. NUNCA modifiques el paquete `agentkit/` para un agente específico — la
    personalización va en config/, knowledge/ y tools.py
-5. El agente DEBE funcionar en test local antes de hablar de deploy
-6. Pregunta antes de sobreescribir archivos existentes en config/ o .env
-7. Mantén simple: no agregues features que el usuario no pidió
+6. El agente DEBE funcionar en test local antes de hablar de deploy
+7. Pregunta antes de sobreescribir archivos existentes en config/ o .env
+8. Mantén simple: no agregues features que el usuario no pidió
 
 ---
 
