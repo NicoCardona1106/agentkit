@@ -21,16 +21,9 @@ build/
 knowledge/*
 !knowledge/.gitkeep
 
-# Archivos generados por Claude Code durante onboarding
-agent/
+# Capa fina generada durante el onboarding (cada agente va a su propio repo)
 config/
-tests/
-requirements.txt
-Dockerfile
-docker-compose.yml
-
-# Session state
-config/session.yaml
+session.yaml
 
 # OS
 .DS_Store
@@ -40,11 +33,7 @@ Thumbs.db
 .vscode/
 .idea/
 *.swp
-*.swo
 *~
-
-# Docker
-.dockerignore
 
 # Node (si se usa para Claude Code)
 node_modules/
