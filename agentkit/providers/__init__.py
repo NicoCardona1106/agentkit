@@ -1,4 +1,4 @@
-# agentkit/providers/__init__.py — Factory de proveedores
+# agentkit/providers/__init__.py — Factory de proveedores de canal
 
 import os
 
@@ -8,12 +8,19 @@ __all__ = ["MensajeEntrante", "ProveedorWhatsApp", "obtener_proveedor"]
 
 
 def obtener_proveedor() -> ProveedorWhatsApp:
-    """Retorna el proveedor de WhatsApp configurado en WHATSAPP_PROVIDER (.env)."""
-    proveedor = os.getenv("WHATSAPP_PROVIDER", "").lower()
+    """Retorna el proveedor del canal configurado en PROVIDER (.env).
+
+    Valores: meta (WhatsApp Cloud API) | twilio (WhatsApp) | instagram (DMs).
+    Se acepta WHATSAPP_PROVIDER como alias por compatibilidad.
+    """
+    proveedor = (os.getenv("PROVIDER") or os.getenv("WHATSAPP_PROVIDER", "")).lower()
     if proveedor == "meta":
         from agentkit.providers.meta import ProveedorMeta
         return ProveedorMeta()
     if proveedor == "twilio":
         from agentkit.providers.twilio import ProveedorTwilio
         return ProveedorTwilio()
-    raise ValueError(f"WHATSAPP_PROVIDER no válido: '{proveedor}'. Usa: meta o twilio")
+    if proveedor == "instagram":
+        from agentkit.providers.instagram import ProveedorInstagram
+        return ProveedorInstagram()
+    raise ValueError(f"PROVIDER no válido: '{proveedor}'. Usa: meta, twilio o instagram")

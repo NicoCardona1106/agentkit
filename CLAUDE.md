@@ -35,8 +35,8 @@ Lo que el core ya trae (no lo re-implementes):
 | Servidor FastAPI + webhook provider-agnostic | `agentkit/main.py` |
 | Claude API con **tool use** (el modelo ejecuta herramientas solo) | `agentkit/brain.py` |
 | Memoria de conversación + **memoria de largo plazo por cliente** + leads + tickets | `agentkit/memory.py` (SQLite local / PostgreSQL prod) |
-| Proveedores Meta y Twilio con **validación de firma** de webhooks | `agentkit/providers/` |
-| Herramientas base: buscar conocimiento, registrar lead, crear ticket, recordar cliente, **derivar a humano** (pausa el bot y avisa al equipo), **link de pago** (Wompi) | `agentkit/herramientas.py` |
+| Canales: **WhatsApp** (Meta Cloud API o Twilio) e **Instagram DM**, con validación de firma de webhooks | `agentkit/providers/` |
+| Herramientas base: buscar conocimiento, registrar lead, crear ticket, recordar cliente, **derivar a humano** (pausa el bot y avisa al equipo), **link de pago** (Wompi / MercadoPago / Stripe) | `agentkit/herramientas.py` |
 | Respuestas en **burbujas cortas con pausas** (humanización) | `agentkit/humanizar.py` |
 | **Notas de voz** → texto (Whisper, opcional) | `agentkit/voz.py` |
 | **Reporte diario** al equipo por WhatsApp (`GET /reporte?token=...`) | `agentkit/reporte.py` |
@@ -137,19 +137,45 @@ PREGUNTA 8: ¿Tienes tu Anthropic API Key?
             Si NO → guiar: platform.anthropic.com → Settings → API Keys
             (empieza con "sk-ant-...")
 
-PREGUNTA 9: ¿Qué servicio de WhatsApp quieres usar?
-            1. Twilio (RECOMENDADO para empezar) — sandbox gratis sin verificación
-            2. Meta Cloud API — la API oficial; requiere Facebook Business
+PREGUNTA 9: ¿Por dónde atenderá tu agente? EL USUARIO ELIGE — tú solo recomiendas
+            según lo que contó del negocio:
 
-PREGUNTA 10: Credenciales del proveedor elegido:
-            META:   Access Token, Phone Number ID, Verify Token (lo inventas),
-                    App Secret (para validar la firma del webhook — está en
-                    developers.facebook.com → tu app → Configuración → Básica)
+            1. WhatsApp con Twilio — para PROBAR rápido: sandbox gratis, sin
+               verificación de Meta. Recomiéndalo si quiere ver el agente
+               funcionando hoy mismo.
+            2. WhatsApp con Meta Cloud API — para PRODUCCIÓN con número propio
+               del negocio. Recomiéndalo si ya validó la idea y tiene (o puede
+               crear) Facebook Business. Responder chats entrantes es gratis.
+            3. Instagram DM — si su audiencia y ventas llegan por Instagram
+               (marcas, creadores, tiendas con perfil activo). Requiere cuenta
+               profesional vinculada a una página de Facebook. Ojo: solo se
+               puede responder dentro de las 24h del último mensaje del cliente.
+
+            Guía rápida: negocio local / ventas por WhatsApp → 1 para probar y
+            migrar a 2; marca con comunidad en Instagram → 3 (y puede sumar
+            WhatsApp después con otro deployment del mismo agente).
+
+PREGUNTA 10: Credenciales del canal elegido:
+            META (WhatsApp): Access Token, Phone Number ID, Verify Token (lo
+                    inventas), App Secret (firma del webhook — developers.facebook.com
+                    → tu app → Configuración → Básica)
             TWILIO: Account SID, Auth Token, número de WhatsApp del sandbox
+            INSTAGRAM: Page Access Token con permiso instagram_manage_messages,
+                    Verify Token (lo inventas) y App Secret de la app de Meta
 
-PREGUNTA 11 (opcional): ¿Quieres cobrar por WhatsApp con links de pago (Wompi)?
-            Si SÍ → pedir la llave privada de Wompi (comercios.wompi.co)
-            Si NO → se puede activar después, solo agregando WOMPI_PRIVATE_KEY al .env
+PREGUNTA 11 (opcional): ¿Quieres cobrar dentro del chat con links de pago?
+            Pregunta EN QUÉ PAÍS opera el negocio y recomienda — pero EL USUARIO
+            ELIGE su pasarela:
+
+            - Colombia        → Wompi (Bancolombia; PSE, Nequi, tarjetas) o MercadoPago
+            - México, Argentina, Chile, Perú, resto de LatAm → MercadoPago
+            - EE.UU., Europa o ventas internacionales → Stripe
+
+            Según la elegida, pedir: WOMPI_PRIVATE_KEY (comercios.wompi.co),
+            MP_ACCESS_TOKEN (mercadopago → Tus integraciones), o
+            STRIPE_SECRET_KEY (dashboard.stripe.com → API keys).
+            Si vende en moneda distinta a la default, fijar PAGOS_MONEDA.
+            Si NO quiere cobrar aún → se activa después agregando la llave al .env.
 
 PREGUNTA 12 (opcional): ¿Número de WhatsApp del equipo para recibir avisos?
             (leads nuevos, tickets, clientes derivados, reporte diario)
@@ -252,18 +278,23 @@ HERRAMIENTAS = [
 ```env
 # AgentKit — NO subir a GitHub
 ANTHROPIC_API_KEY=sk-ant-...
-WHATSAPP_PROVIDER=twilio        # meta | twilio
+PROVIDER=twilio                 # meta | twilio | instagram
 
-# Si meta:
+# Si meta (WhatsApp):
 # META_ACCESS_TOKEN=...
 # META_PHONE_NUMBER_ID=...
 # META_VERIFY_TOKEN=...
 # META_APP_SECRET=...           # valida la firma del webhook
 
-# Si twilio:
+# Si twilio (WhatsApp):
 # TWILIO_ACCOUNT_SID=...
 # TWILIO_AUTH_TOKEN=...
 # TWILIO_PHONE_NUMBER=...
+
+# Si instagram:
+# IG_ACCESS_TOKEN=...           # Page Access Token con instagram_manage_messages
+# IG_VERIFY_TOKEN=...
+# IG_APP_SECRET=...
 
 # Producción
 PORT=8000
@@ -271,12 +302,17 @@ ENVIRONMENT=development         # development | production
 DATABASE_URL=sqlite+aiosqlite:///./agentkit.db
 # PUBLIC_URL=https://tu-app.up.railway.app   # requerida en prod para validar firma Twilio
 
+# Pagos (solo la pasarela que eligió el usuario)
+# WOMPI_PRIVATE_KEY=prv_...     # Colombia
+# MP_ACCESS_TOKEN=APP_USR-...   # LatAm (MercadoPago)
+# STRIPE_SECRET_KEY=sk_live_... # Global (Stripe)
+# PAGOS_MONEDA=COP              # solo si difiere del default de la pasarela
+
 # Opcionales
 # CLAUDE_MODEL=claude-sonnet-5
 # ADMIN_PHONE=+57...            # avisos al equipo (leads, tickets, derivaciones, reporte)
 # REPORTE_TOKEN=un-token-secreto  # habilita GET /reporte?token=...
 # OPENAI_API_KEY=sk-...         # notas de voz (Whisper)
-# WOMPI_PRIVATE_KEY=prv_...     # links de pago
 # HUMANIZAR=true                # burbujas cortas con pausas
 # PAUSA_MINUTOS=60              # cuánto se pausa el bot al derivar a humano
 ```
@@ -340,7 +376,19 @@ También puedes probar el servidor completo: `uvicorn agentkit.main:app --reload
 
 ---
 
-### FASE 5 — Deploy a Railway
+### FASE 5 — Deploy a producción
+
+Recomienda dónde desplegar según el agente — EL USUARIO ELIGE:
+
+| Opción | Ideal para | Nota |
+|--------|-----------|------|
+| **Railway** (default) | Empezar rápido, deploy automático desde GitHub, cron para el reporte | ~USD $5/mes; agrega PostgreSQL con un clic |
+| Render | Lo mismo que Railway | El plan gratis "duerme" el servidor — malo para chat en tiempo real |
+| Fly.io | Bajar latencia (servidores cerca de LatAm) | Más técnico de configurar |
+| Google Cloud Run | Mucho volumen pagando por uso | Requiere cuenta GCP |
+| VPS (Hetzner/DO) | Control total, costo fijo, varios agentes en una máquina | Tú administras todo (usa el docker-compose) |
+
+Si duda, usa Railway. Los pasos siguientes asumen Railway (adapta si eligió otro):
 
 1. Subir la carpeta del agente a un repo propio de GitHub (privado):
    ```bash
@@ -352,12 +400,16 @@ También puedes probar el servidor completo: `uvicorn agentkit.main:app --reload
 3. Variables en Railway: todas las del `.env` + `ENVIRONMENT=production` +
    `PUBLIC_URL` (la URL que Railway asigna) + `DATABASE_URL` de PostgreSQL
    (agregar el plugin PostgreSQL de Railway — memoria permanente)
-4. Webhook:
-   - META: developers.facebook.com → WhatsApp → Configuration →
+4. Webhook (según el canal):
+   - META (WhatsApp): developers.facebook.com → WhatsApp → Configuration →
      Callback `https://tu-app.up.railway.app/webhook`, Verify Token el del .env,
      suscribirse al campo "messages"
    - TWILIO: Console → Messaging → Sandbox Settings →
      "When a message comes in": `https://tu-app.up.railway.app/webhook` (POST)
+   - INSTAGRAM: developers.facebook.com → tu app → Webhooks → producto
+     "Instagram" → Callback `https://tu-app.up.railway.app/webhook`, Verify
+     Token el del .env, suscribirse al campo "messages"; la página de Facebook
+     debe estar suscrita a la app
 5. (Opcional) Reporte diario: crear un cron (Railway cron o cron-job.org) que
    llame `https://tu-app.up.railway.app/reporte?token=REPORTE_TOKEN` a la hora deseada.
 

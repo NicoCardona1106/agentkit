@@ -1,6 +1,6 @@
-# AgentKit — WhatsApp AI Agent Builder
+# AgentKit — AI Agent Builder (WhatsApp e Instagram)
 
-Construye tu propio agente de WhatsApp con inteligencia artificial en menos de 30 minutos.
+Construye tu propio agente de IA para WhatsApp o Instagram en menos de 30 minutos.
 No necesitas saber programar. Claude Code te entrevista y configura todo por ti.
 
 ---
@@ -27,7 +27,9 @@ Cuando el core mejora, **todos tus agentes mejoran** con un `pip install --upgra
 - **Recordar a cada cliente** entre conversaciones (nombre, compras, intereses)
 - **Derivar a un humano** cuando el cliente quiere cerrar la compra: pausa el bot
   y le pasa el contexto completo a tu asesor
-- **Cobrar por WhatsApp** con links de pago (Wompi, Colombia)
+- **Cobrar dentro del chat** con links de pago — eliges tu pasarela según tu país:
+  Wompi (Colombia), MercadoPago (LatAm) o Stripe (global)
+- Atender por **WhatsApp** (Meta Cloud API o Twilio) o por **Instagram DM**
 - Responder en **burbujas cortas con pausas**, como escribe una persona
 - Entender **notas de voz** (transcripción con Whisper, opcional)
 - Enviar un **reporte diario** al equipo: leads, tickets y conversaciones
@@ -76,10 +78,10 @@ y la configuración del webhook en Meta o Twilio).
 | Runtime | Python 3.11+ |
 | Servidor | FastAPI + Uvicorn |
 | IA | Anthropic Claude (`claude-sonnet-5` por defecto, con tool use) |
-| WhatsApp | Meta Cloud API / Twilio |
+| Canales | WhatsApp (Meta Cloud API / Twilio) e Instagram DM |
 | Base de datos | SQLite (local) / PostgreSQL (producción) |
 | Voz | Whisper (OpenAI, opcional) |
-| Pagos | Wompi (opcional) |
+| Pagos | Wompi / MercadoPago / Stripe (opcional, según país) |
 | Deploy | Docker + Railway |
 
 ## Desarrollo del core

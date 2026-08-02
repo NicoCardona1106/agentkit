@@ -13,6 +13,15 @@ from agentkit.providers.base import MensajeEntrante, ProveedorWhatsApp
 logger = logging.getLogger("agentkit")
 
 
+def firma_meta_valida(app_secret: str | None, firma_header: str, cuerpo: bytes) -> bool:
+    """Valida X-Hub-Signature-256 (HMAC-SHA256 del body). Compartida por WhatsApp e Instagram."""
+    if not app_secret:
+        logger.warning("App Secret no configurado — firma de webhook NO validada")
+        return True
+    esperada = "sha256=" + hmac.new(app_secret.encode(), cuerpo, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(firma_header, esperada)
+
+
 class ProveedorMeta(ProveedorWhatsApp):
     """Proveedor de WhatsApp usando la API oficial de Meta (Cloud API)."""
 
@@ -30,14 +39,8 @@ class ProveedorMeta(ProveedorWhatsApp):
         return None
 
     async def validar_firma(self, request: Request) -> bool:
-        """Valida X-Hub-Signature-256 (HMAC-SHA256 del body con el App Secret)."""
-        if not self.app_secret:
-            logger.warning("META_APP_SECRET no configurado — firma de webhook NO validada")
-            return True
-        firma = request.headers.get("X-Hub-Signature-256", "")
-        cuerpo = await request.body()
-        esperada = "sha256=" + hmac.new(self.app_secret.encode(), cuerpo, hashlib.sha256).hexdigest()
-        return hmac.compare_digest(firma, esperada)
+        return firma_meta_valida(self.app_secret, request.headers.get("X-Hub-Signature-256", ""),
+                                 await request.body())
 
     async def parsear_webhook(self, request: Request) -> list[MensajeEntrante]:
         body = await request.json()

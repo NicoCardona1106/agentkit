@@ -52,8 +52,8 @@ ESQUEMA_PAGO = _schema(
     "Genera un link de pago para que el cliente pague sin salir de WhatsApp. "
     "Úsala SOLO cuando el cliente confirme la compra y el precio esté verificado en el conocimiento del negocio.",
     {"concepto": {"type": "string", "description": "Qué está pagando el cliente"},
-     "monto_cop": {"type": "integer", "description": "Monto en pesos colombianos (sin centavos)"}},
-    ["concepto", "monto_cop"])
+     "monto": {"type": "integer", "description": "Monto en la moneda del negocio, sin decimales"}},
+    ["concepto", "monto"])
 
 
 def buscar_en_knowledge(consulta: str) -> str:
@@ -124,11 +124,11 @@ def obtener_herramientas(telefono: str, proveedor: ProveedorWhatsApp):
                 return ("Conversación derivada: un asesor fue notificado y el bot quedó en pausa. "
                         "Despídete diciéndole al cliente que un asesor le escribirá en breve.")
             if nombre == "crear_link_pago":
-                link = await pagos.crear_link_pago(entrada["concepto"], entrada["monto_cop"])
+                link = await pagos.crear_link_pago(entrada["concepto"], entrada["monto"])
                 if not link:
                     return "No se pudo generar el link de pago. Ofrece derivar a un asesor."
                 await notificar.notificar_equipo(
-                    proveedor, f"💰 Link de pago para {telefono}: {entrada['concepto']} — ${entrada['monto_cop']:,} COP")
+                    proveedor, f"💰 Link de pago para {telefono}: {entrada['concepto']} — ${entrada['monto']:,}")
                 return f"Link de pago generado: {link} — Compártelo con el cliente."
             if nombre in funciones_custom:
                 resultado = funciones_custom[nombre](**entrada)

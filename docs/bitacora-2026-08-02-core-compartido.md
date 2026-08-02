@@ -60,10 +60,25 @@ agentes con `pip install --upgrade`.
   cliente, pausas, leads, tickets, resumen del día). ✅ Pasan.
 - `from agentkit import main, chat, ...` importa limpio. ✅
 
+## v0.2.0 (mismo día)
+
+- **Canal Instagram DM** (`providers/instagram.py`): misma Graph API de Meta,
+  firma compartida con WhatsApp, descarta ecos, soporta notas de voz. Variable
+  de canal renombrada a `PROVIDER` (meta | twilio | instagram; se acepta
+  `WHATSAPP_PROVIDER` como alias).
+- **Pagos elegibles por el usuario**: Wompi (Colombia), MercadoPago (LatAm) y
+  Stripe (global). Se detecta por la llave en .env; `PAGOS_PROVIDER` fuerza y
+  `PAGOS_MONEDA` ajusta la moneda. La entrevista recomienda por país pero el
+  usuario decide.
+- **Entrevista**: ahora recomienda canal según el negocio (Twilio para probar,
+  Meta para producción, Instagram para marcas con audiencia ahí), pasarela por
+  país, y hosting según el caso (Railway default; Render/Fly/Cloud Run/VPS).
+
 ## Pendientes conocidos
 
-- Verificar el shape exacto del API de payment_links de Wompi con una llave real
-  antes del primer cobro en producción.
+- Verificar el shape exacto de los APIs de pago (Wompi payment_links,
+  MercadoPago preferences, Stripe payment_links) con llaves reales antes del
+  primer cobro en producción.
 - Migrar **Ragnar** a esta base (su repo `nivaldyr-agente-whatsapp` sigue con el
   código generado de la versión anterior).
 - Typing indicator real (Meta lo soporta; hoy la pausa es solo un `sleep`).

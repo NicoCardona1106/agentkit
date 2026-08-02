@@ -60,6 +60,40 @@ def test_firma_meta():
     assert asyncio.run(p.validar_firma(FakeRequest())) is False
 
 
+def test_instagram_parse():
+    from agentkit.providers.instagram import ProveedorInstagram
+
+    payload = {"entry": [{"messaging": [
+        {"sender": {"id": "IG123"}, "message": {"mid": "m1", "text": "hola"}},
+        {"sender": {"id": "IG123"}, "message": {"mid": "m2", "is_echo": True, "text": "eco"}},
+        {"sender": {"id": "IG456"}, "message": {"mid": "m3", "attachments": [
+            {"type": "audio", "payload": {"url": "https://cdn/audio.mp4"}}]}},
+    ]}]}
+
+    class FakeRequest:
+        async def json(self):
+            return payload
+
+    msgs = asyncio.run(ProveedorInstagram().parsear_webhook(FakeRequest()))
+    assert len(msgs) == 2  # el eco se descarta
+    assert msgs[0].telefono == "IG123" and msgs[0].texto == "hola"
+    assert msgs[1].audio_ref == "https://cdn/audio.mp4"
+
+
+def test_pagos_seleccion():
+    from agentkit import pagos
+
+    for var in ("WOMPI_PRIVATE_KEY", "MP_ACCESS_TOKEN", "STRIPE_SECRET_KEY", "PAGOS_PROVIDER"):
+        os.environ.pop(var, None)
+    assert not pagos.pagos_configurados()
+    os.environ["MP_ACCESS_TOKEN"] = "APP_USR-test"
+    assert pagos.proveedor_pago() == "mercadopago"
+    os.environ["PAGOS_PROVIDER"] = "stripe"
+    assert pagos.proveedor_pago() == "stripe"  # el override gana
+    for var in ("MP_ACCESS_TOKEN", "PAGOS_PROVIDER"):
+        os.environ.pop(var, None)
+
+
 def test_herramientas_esquemas():
     from agentkit.herramientas import ESQUEMAS_BASE
 
@@ -100,6 +134,8 @@ if __name__ == "__main__":
     test_humanizar()
     test_firma_twilio()
     test_firma_meta()
+    test_instagram_parse()
+    test_pagos_seleccion()
     test_herramientas_esquemas()
     asyncio.run(_test_memory())
     print("OK — todos los self-checks pasaron")
