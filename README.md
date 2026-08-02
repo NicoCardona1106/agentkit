@@ -48,10 +48,12 @@ claude
 ```
 
 Claude Code te hace ~12 preguntas sobre tu negocio (nombre, tono, horario,
-credenciales de WhatsApp…) y genera tu agente en una carpeta propia:
+credenciales de WhatsApp…) y genera tu agente en su propia carpeta dentro de
+`agentes/` — puedes crear todos los agentes que quieras desde el mismo clon,
+el repo nunca se ensucia:
 
 ```
-mi-agente/
+agentes/mi-agente/
 ├── config/business.yaml    ← datos del negocio
 ├── config/prompts.yaml     ← personalidad del agente
 ├── knowledge/              ← tu menú, precios, FAQ

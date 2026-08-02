@@ -42,10 +42,12 @@ Lo que el core ya trae (no lo re-implementes):
 | **Reporte diario** al equipo por WhatsApp (`GET /reporte?token=...`) | `agentkit/reporte.py` |
 | Chat de prueba local sin WhatsApp | `python -m agentkit.chat` |
 
-Estructura de un agente (la capa fina que TÚ generas):
+Estructura de un agente (la capa fina que TÚ generas). Cada agente vive en
+`agentes/<nombre>/` — el repo de AgentKit nunca se ensucia y se pueden crear
+tantos agentes como se quiera desde el mismo clon:
 
 ```
-mi-agente/
+agentes/mi-agente/
 ├── config/
 │   ├── business.yaml      ← Datos del negocio (de la entrevista)
 │   └── prompts.yaml       ← System prompt personalizado
@@ -89,13 +91,20 @@ Antes de empezar, dejame verificar que tu entorno esta listo...
 ```
 
 1. Verificar Python >= 3.11 (`python3 --version` o `python --version`)
-2. Crear la carpeta del agente si estás dentro del repo de AgentKit
-   (pregunta el nombre, ej: `mi-agente/`), con `config/`, `knowledge/`
-3. Generar `requirements.txt`:
+2. **Cada agente vive en su PROPIA carpeta nueva: `agentes/<nombre-en-kebab>/`.**
+   - Pregunta el nombre del agente y crea `agentes/<nombre>/` con `config/` y
+     `knowledge/` dentro
+   - NUNCA generes archivos del agente en la raíz del repo de AgentKit — el
+     repo queda siempre limpio para crear más agentes sin volver a clonar
+   - Si la carpeta ya existe: pregunta si quiere CONTINUAR ese agente
+     (retomar donde iba) o usar otro nombre. NUNCA sobreescribas sin preguntar
+   - TODOS los comandos de las fases siguientes se ejecutan DESDE esa carpeta
+     (`cd agentes/<nombre>` antes de pip, chat, uvicorn, git)
+3. Generar `agentes/<nombre>/requirements.txt`:
    ```
    agentkit @ git+https://github.com/NicoCardona1106/agentkit.git
    ```
-4. `pip install -r requirements.txt`
+4. `pip install -r requirements.txt` (desde la carpeta del agente)
 5. Confirmar: "Fase 1 completada — Entorno listo"
 
 ---

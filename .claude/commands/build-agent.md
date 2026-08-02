@@ -8,7 +8,10 @@ de este repo (core compartido). Tú solo generas la CAPA FINA del agente.
 FASE 1 — Bienvenida y verificación del entorno
 - Muestra el mensaje de bienvenida
 - Verifica Python >= 3.11
-- Pregunta el nombre del agente y crea su carpeta (ej: mi-agente/) con config/ y knowledge/
+- Pregunta el nombre del agente y crea SU PROPIA carpeta NUEVA en
+  agentes/<nombre>/ con config/ y knowledge/ — NUNCA generes en la raíz del
+  repo ni sobreescribas una carpeta existente (si existe: ofrecer continuar
+  ese agente o elegir otro nombre). Todo lo demás se ejecuta desde esa carpeta.
 - Genera requirements.txt (instala agentkit desde este repo) e instala dependencias
 
 FASE 2 — Entrevista del negocio

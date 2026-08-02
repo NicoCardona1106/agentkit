@@ -21,7 +21,10 @@ build/
 knowledge/*
 !knowledge/.gitkeep
 
-# Capa fina generada durante el onboarding (cada agente va a su propio repo)
+# Agentes creados con /build-agent (cada uno es su propio repo independiente)
+agentes/
+
+# Capa fina generada durante el onboarding
 config/
 session.yaml
 
