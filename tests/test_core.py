@@ -151,6 +151,7 @@ async def _test_memory():
     cliente = await memory.obtener_cliente(tel)
     assert cliente["nombre"] == "Andrés" and "RTX" in cliente["notas"]
 
+    await memory.pausar_conversacion(tel, minutos=0)  # limpia pausas de corridas anteriores
     assert not await memory.conversacion_pausada(tel)
     await memory.pausar_conversacion(tel, minutos=5)
     assert await memory.conversacion_pausada(tel)

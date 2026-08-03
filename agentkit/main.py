@@ -7,14 +7,14 @@ import secrets
 from collections import deque
 from contextlib import asynccontextmanager
 
-from dotenv import load_dotenv
+from dotenv import find_dotenv, load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import PlainTextResponse, Response
 
 from agentkit import brain, humanizar, memory, reporte, voz
 from agentkit.providers import MensajeEntrante, obtener_proveedor
 
-load_dotenv()
+load_dotenv(find_dotenv(usecwd=True))  # el .env vive en la carpeta del agente (cwd), no junto al paquete
 
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
 logging.basicConfig(level=logging.DEBUG if ENVIRONMENT == "development" else logging.INFO)

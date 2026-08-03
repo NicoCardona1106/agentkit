@@ -6,12 +6,12 @@ from datetime import datetime
 
 import yaml
 from anthropic import AsyncAnthropic
-from dotenv import load_dotenv
+from dotenv import find_dotenv, load_dotenv
 
 from agentkit import herramientas, memory
 from agentkit.providers.base import ProveedorWhatsApp
 
-load_dotenv()
+load_dotenv(find_dotenv(usecwd=True))  # el .env vive en la carpeta del agente (cwd), no junto al paquete
 logger = logging.getLogger("agentkit")
 
 client = AsyncAnthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))

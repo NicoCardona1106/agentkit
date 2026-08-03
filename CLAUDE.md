@@ -104,7 +104,7 @@ Antes de empezar, dejame verificar que tu entorno esta listo...
    (tag) del core — así el build de Docker/Railway es reproducible y
    actualizar el agente = subir el tag en esta línea:
    ```
-   agentkit @ git+https://github.com/NicoCardona1106/agentkit.git@v0.5.0
+   agentkit @ git+https://github.com/NicoCardona1106/agentkit.git@v0.5.1
    ```
    (Verifica el último tag con `git tag` en el repo del core o en GitHub → Releases)
 4. `pip install -r requirements.txt` (desde la carpeta del agente)
