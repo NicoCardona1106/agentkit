@@ -76,6 +76,17 @@ class ProveedorMeta(ProveedorWhatsApp):
                 logger.error(f"Error Meta API: {r.status_code} — {r.text}")
             return r.status_code == 200
 
+    async def enviar_audio_url(self, telefono: str, audio_url: str) -> bool:
+        if not self.access_token or not self.phone_number_id:
+            return False
+        url = f"https://graph.facebook.com/{self.api_version}/{self.phone_number_id}/messages"
+        payload = {"messaging_product": "whatsapp", "to": telefono, "type": "audio", "audio": {"link": audio_url}}
+        async with httpx.AsyncClient() as client:
+            r = await client.post(url, json=payload, headers={"Authorization": f"Bearer {self.access_token}"})
+            if r.status_code != 200:
+                logger.error(f"Error Meta API (audio): {r.status_code} — {r.text}")
+            return r.status_code == 200
+
     async def descargar_audio(self, audio_ref: str) -> bytes | None:
         """En Meta el audio_ref es un media id: primero se resuelve la URL, luego se descarga."""
         headers = {"Authorization": f"Bearer {self.access_token}"}

@@ -1,12 +1,15 @@
-# agentkit/voz.py — Transcripción de notas de voz (Whisper via Groq u OpenAI)
+# agentkit/voz.py — Notas de voz: transcripción (Whisper) y respuesta en voz (TTS)
 #
-# Claude no acepta audio, así que se transcribe con Whisper:
+# Entrada (audio → texto), Whisper:
 #   - GROQ_API_KEY   → Groq (GRATIS, rápido) — recomendado. console.groq.com
 #   - OPENAI_API_KEY → OpenAI (~USD $0.006/min)
+# Salida (texto → audio), TTS:
+#   - OPENAI_API_KEY → OpenAI gpt-4o-mini-tts (~USD $0.015/min, español natural)
 # Ambos usan el mismo API compatible con OpenAI.
 
 import logging
 import os
+import re
 
 import httpx
 
@@ -45,3 +48,37 @@ async def transcribir(audio: bytes, nombre_archivo: str = "audio.ogg") -> str | 
             logger.error(f"Error transcripción ({url}): {r.status_code} — {r.text}")
             return None
         return r.json().get("text", "").strip() or None
+
+
+# --- Respuesta en voz (texto → audio) ---
+
+def tts_configurada() -> bool:
+    return bool(os.getenv("OPENAI_API_KEY"))
+
+
+def texto_para_voz(texto: str) -> str:
+    """Versión hablable de una respuesta: sin URLs, markdown ni saltos de línea."""
+    texto = re.sub(r"https?://\S+", "el link que te dejo aquí en el chat", texto)
+    texto = re.sub(r"[*_#`~]", "", texto)
+    return re.sub(r"\s+", " ", texto).strip()
+
+
+async def sintetizar(texto: str) -> bytes | None:
+    """Convierte texto en audio MP3 (OpenAI TTS). None si no está configurado o falla."""
+    if not tts_configurada():
+        return None
+    async with httpx.AsyncClient(timeout=60) as client:
+        r = await client.post(
+            "https://api.openai.com/v1/audio/speech",
+            headers={"Authorization": f"Bearer {os.getenv('OPENAI_API_KEY')}"},
+            json={
+                "model": os.getenv("TTS_MODELO", "gpt-4o-mini-tts"),
+                "voice": os.getenv("TTS_VOZ", "nova"),
+                "input": texto[:2000],  # ponytail: tope duro, una nota de voz no debe durar minutos
+                "response_format": "mp3",
+            },
+        )
+        if r.status_code != 200:
+            logger.error(f"Error TTS: {r.status_code} — {r.text}")
+            return None
+        return r.content

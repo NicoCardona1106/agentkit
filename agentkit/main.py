@@ -3,12 +3,13 @@
 import asyncio
 import logging
 import os
+import secrets
 from collections import deque
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import PlainTextResponse, Response
 
 from agentkit import brain, humanizar, memory, reporte, voz
 from agentkit.providers import MensajeEntrante, obtener_proveedor
@@ -23,6 +24,18 @@ proveedor = obtener_proveedor()
 
 # Dedup de webhooks reenviados (Meta/Twilio reintentan si no respondemos rápido)
 _procesados: deque[str] = deque(maxlen=500)
+
+# Audios TTS generados, servidos en /audio/{id} para que el proveedor los descargue
+# ponytail: en memoria con tope de 50 — si algún día hay varios workers, pasar a storage compartido
+_audios: dict[str, bytes] = {}
+
+
+def _guardar_audio(audio: bytes) -> str:
+    aid = secrets.token_urlsafe(8)
+    _audios[aid] = audio
+    while len(_audios) > 50:
+        _audios.pop(next(iter(_audios)))
+    return aid
 
 
 @asynccontextmanager
@@ -74,6 +87,15 @@ async def procesar_mensaje(msg: MensajeEntrante):
 
         await memory.guardar_mensaje(msg.telefono, "user", texto)
         await memory.guardar_mensaje(msg.telefono, "assistant", respuesta)
+
+        # Si el cliente habló, el agente responde también con voz (requiere TTS y PUBLIC_URL)
+        public_url = os.getenv("PUBLIC_URL", "").rstrip("/")
+        if msg.audio_ref and voz.tts_configurada() and public_url:
+            audio_out = await voz.sintetizar(voz.texto_para_voz(respuesta))
+            if audio_out:
+                aid = _guardar_audio(audio_out)
+                await proveedor.enviar_audio_url(msg.telefono, f"{public_url}/audio/{aid}")
+
         await humanizar.enviar_humanizado(proveedor, msg.telefono, respuesta)
         logger.info(f"Respuesta a {msg.telefono}: {respuesta}")
     except Exception as e:
@@ -93,6 +115,15 @@ async def webhook_handler(request: Request):
         # Background: el proveedor reintenta el webhook si tardamos; Claude puede tardar >15s
         asyncio.create_task(procesar_mensaje(msg))
     return {"status": "ok"}
+
+
+@app.get("/audio/{aid}")
+async def servir_audio(aid: str):
+    """Sirve un audio TTS generado, para que el proveedor de WhatsApp lo descargue."""
+    audio = _audios.get(aid)
+    if not audio:
+        raise HTTPException(status_code=404, detail="Audio no encontrado")
+    return Response(content=audio, media_type="audio/mpeg")
 
 
 @app.get("/reporte")

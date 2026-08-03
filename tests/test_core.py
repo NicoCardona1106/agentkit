@@ -108,6 +108,20 @@ def test_voz_config():
         os.environ.pop(var, None)
 
 
+def test_tts():
+    from agentkit import voz
+
+    os.environ.pop("OPENAI_API_KEY", None)
+    assert not voz.tts_configurada()
+    os.environ["OPENAI_API_KEY"] = "sk-test"
+    assert voz.tts_configurada()
+    os.environ.pop("OPENAI_API_KEY", None)
+
+    hablado = voz.texto_para_voz("*Plan Pro*: $99.000/mes.\n\nPaga aquí: https://wompi.co/l/abc123")
+    assert "http" not in hablado and "*" not in hablado and "\n" not in hablado
+    assert "link" in hablado  # la URL se reemplaza por una mención al chat
+
+
 def test_herramientas_esquemas():
     from agentkit.herramientas import ESQUEMAS_BASE
 
@@ -151,6 +165,7 @@ if __name__ == "__main__":
     test_instagram_parse()
     test_pagos_seleccion()
     test_voz_config()
+    test_tts()
     test_herramientas_esquemas()
     asyncio.run(_test_memory())
     print("OK — todos los self-checks pasaron")

@@ -38,7 +38,7 @@ Lo que el core ya trae (no lo re-implementes):
 | Canales: **WhatsApp** (Meta Cloud API o Twilio) e **Instagram DM**, con validación de firma de webhooks | `agentkit/providers/` |
 | Herramientas base: buscar conocimiento, registrar lead, crear ticket, recordar cliente, **derivar a humano** (pausa el bot y avisa al equipo), **link de pago** (Wompi / MercadoPago / Stripe) | `agentkit/herramientas.py` |
 | Respuestas en **burbujas cortas con pausas** (humanización) | `agentkit/humanizar.py` |
-| **Notas de voz** → texto (Whisper, opcional) | `agentkit/voz.py` |
+| **Notas de voz** → texto (Whisper) y **respuesta en voz** (TTS, opcional) | `agentkit/voz.py` |
 | **Reporte diario** al equipo por WhatsApp (`GET /reporte?token=...`) | `agentkit/reporte.py` |
 | Chat de prueba local sin WhatsApp | `python -m agentkit.chat` |
 
@@ -104,7 +104,7 @@ Antes de empezar, dejame verificar que tu entorno esta listo...
    (tag) del core — así el build de Docker/Railway es reproducible y
    actualizar el agente = subir el tag en esta línea:
    ```
-   agentkit @ git+https://github.com/NicoCardona1106/agentkit.git@v0.3.0
+   agentkit @ git+https://github.com/NicoCardona1106/agentkit.git@v0.4.0
    ```
    (Verifica el último tag con `git tag` en el repo del core o en GitHub → Releases)
 4. `pip install -r requirements.txt` (desde la carpeta del agente)
@@ -198,6 +198,12 @@ PREGUNTA 13 (opcional): ¿Quieres que el agente entienda notas de voz?
             → API Keys → Create API Key → GROQ_API_KEY en el .env.
             Alternativa: OpenAI (OPENAI_API_KEY, ~$0.006/min).
             Si NO → el agente pedirá amablemente que le escriban el mensaje.
+
+            Y si SÍ: ¿quieres que también RESPONDA con voz cuando el cliente
+            le hable? Requiere OPENAI_API_KEY (TTS, ~$0.015/min) y PUBLIC_URL
+            configurada (el proveedor descarga el audio desde /audio/{id}).
+            Regla: el agente responde con nota de voz + texto SOLO cuando el
+            cliente mandó nota de voz.
 ```
 
 Al terminar: "Fase 2 completada — Información del negocio recopilada"
@@ -330,7 +336,9 @@ DATABASE_URL=sqlite+aiosqlite:///./agentkit.db
 # CLAUDE_MODEL=claude-sonnet-5
 # ADMIN_PHONE=+57...            # avisos al equipo (leads, tickets, derivaciones, reporte)
 # REPORTE_TOKEN=un-token-secreto  # habilita GET /reporte?token=...
-# OPENAI_API_KEY=sk-...         # notas de voz (Whisper)
+# OPENAI_API_KEY=sk-...         # notas de voz (Whisper) y respuesta en voz (TTS)
+# TTS_VOZ=nova                  # voz del TTS (alloy, nova, shimmer…)
+# TTS_MODELO=gpt-4o-mini-tts
 # HUMANIZAR=true                # burbujas cortas con pausas
 # PAUSA_MINUTOS=60              # cuánto se pausa el bot al derivar a humano
 ```

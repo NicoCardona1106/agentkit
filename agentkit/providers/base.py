@@ -38,3 +38,7 @@ class ProveedorWhatsApp(ABC):
     async def descargar_audio(self, audio_ref: str) -> bytes | None:
         """Descarga el audio de una nota de voz. None si no soporta audio."""
         return None
+
+    async def enviar_audio_url(self, telefono: str, audio_url: str) -> bool:
+        """Envía un audio desde una URL pública. False si el canal no lo soporta."""
+        return False

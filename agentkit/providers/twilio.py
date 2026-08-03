@@ -68,6 +68,17 @@ class ProveedorTwilio(ProveedorWhatsApp):
                 logger.error(f"Error Twilio: {r.status_code} — {r.text}")
             return r.status_code == 201
 
+    async def enviar_audio_url(self, telefono: str, audio_url: str) -> bool:
+        if not all([self.account_sid, self.auth_token, self.phone_number]):
+            return False
+        url = f"https://api.twilio.com/2010-04-01/Accounts/{self.account_sid}/Messages.json"
+        data = {"From": f"whatsapp:{self.phone_number}", "To": f"whatsapp:{telefono}", "MediaUrl": audio_url}
+        async with httpx.AsyncClient() as client:
+            r = await client.post(url, data=data, auth=(self.account_sid, self.auth_token))
+            if r.status_code != 201:
+                logger.error(f"Error Twilio (audio): {r.status_code} — {r.text}")
+            return r.status_code == 201
+
     async def descargar_audio(self, audio_ref: str) -> bytes | None:
         """En Twilio el audio_ref es la URL del media (requiere auth básica)."""
         async with httpx.AsyncClient(follow_redirects=True) as client:
