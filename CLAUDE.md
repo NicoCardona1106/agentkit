@@ -104,7 +104,7 @@ Antes de empezar, dejame verificar que tu entorno esta listo...
    (tag) del core — así el build de Docker/Railway es reproducible y
    actualizar el agente = subir el tag en esta línea:
    ```
-   agentkit @ git+https://github.com/NicoCardona1106/agentkit.git@v0.5.1
+   agentkit @ git+https://github.com/NicoCardona1106/agentkit.git@v0.5.2
    ```
    (Verifica el último tag con `git tag` en el repo del core o en GitHub → Releases)
 4. `pip install -r requirements.txt` (desde la carpeta del agente)
@@ -205,8 +205,9 @@ PREGUNTA 13 (opcional): ¿Quieres que el agente entienda notas de voz?
             - GEMINI_API_KEY (capa GRATIS en aistudio.google.com) + ffmpeg
               instalado (convierte el PCM de Gemini a mp3)
             - OPENAI_API_KEY (~$0.015/min, mp3 directo, sin ffmpeg)
-            Regla: el agente responde con nota de voz + texto SOLO cuando el
-            cliente mandó nota de voz.
+            Regla: si el cliente mandó nota de voz, el agente responde SOLO con
+            nota de voz; el texto se envía únicamente si la voz falló o si la
+            respuesta trae un link (que la voz no puede transmitir).
 ```
 
 Al terminar: "Fase 2 completada — Información del negocio recopilada"
