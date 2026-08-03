@@ -104,7 +104,7 @@ Antes de empezar, dejame verificar que tu entorno esta listo...
    (tag) del core — así el build de Docker/Railway es reproducible y
    actualizar el agente = subir el tag en esta línea:
    ```
-   agentkit @ git+https://github.com/NicoCardona1106/agentkit.git@v0.4.0
+   agentkit @ git+https://github.com/NicoCardona1106/agentkit.git@v0.5.0
    ```
    (Verifica el último tag con `git tag` en el repo del core o en GitHub → Releases)
 4. `pip install -r requirements.txt` (desde la carpeta del agente)
@@ -200,8 +200,11 @@ PREGUNTA 13 (opcional): ¿Quieres que el agente entienda notas de voz?
             Si NO → el agente pedirá amablemente que le escriban el mensaje.
 
             Y si SÍ: ¿quieres que también RESPONDA con voz cuando el cliente
-            le hable? Requiere OPENAI_API_KEY (TTS, ~$0.015/min) y PUBLIC_URL
-            configurada (el proveedor descarga el audio desde /audio/{id}).
+            le hable? Opciones (además requiere PUBLIC_URL configurada — el
+            proveedor descarga el audio desde /audio/{id}):
+            - GEMINI_API_KEY (capa GRATIS en aistudio.google.com) + ffmpeg
+              instalado (convierte el PCM de Gemini a mp3)
+            - OPENAI_API_KEY (~$0.015/min, mp3 directo, sin ffmpeg)
             Regla: el agente responde con nota de voz + texto SOLO cuando el
             cliente mandó nota de voz.
 ```
@@ -336,9 +339,10 @@ DATABASE_URL=sqlite+aiosqlite:///./agentkit.db
 # CLAUDE_MODEL=claude-sonnet-5
 # ADMIN_PHONE=+57...            # avisos al equipo (leads, tickets, derivaciones, reporte)
 # REPORTE_TOKEN=un-token-secreto  # habilita GET /reporte?token=...
-# OPENAI_API_KEY=sk-...         # notas de voz (Whisper) y respuesta en voz (TTS)
-# TTS_VOZ=nova                  # voz del TTS (alloy, nova, shimmer…)
-# TTS_MODELO=gpt-4o-mini-tts
+# GEMINI_API_KEY=AIza...        # respuesta en voz (TTS gratis; requiere ffmpeg)
+# OPENAI_API_KEY=sk-...         # notas de voz (Whisper) y/o TTS (mp3 directo)
+# TTS_VOZ=Kore                  # voz del TTS (Gemini: Kore, Puck… / OpenAI: nova, alloy…)
+# TTS_MODELO=gemini-2.5-flash-preview-tts
 # HUMANIZAR=true                # burbujas cortas con pausas
 # PAUSA_MINUTOS=60              # cuánto se pausa el bot al derivar a humano
 ```
@@ -349,7 +353,7 @@ DATABASE_URL=sqlite+aiosqlite:///./agentkit.db
 ```dockerfile
 FROM python:3.11-slim
 WORKDIR /app
-RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends git ffmpeg && rm -rf /var/lib/apt/lists/*
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY . .

@@ -111,8 +111,12 @@ def test_voz_config():
 def test_tts():
     from agentkit import voz
 
-    os.environ.pop("OPENAI_API_KEY", None)
+    for var in ("OPENAI_API_KEY", "GEMINI_API_KEY"):
+        os.environ.pop(var, None)
     assert not voz.tts_configurada()
+    os.environ["GEMINI_API_KEY"] = "AIza-test"
+    assert voz.tts_configurada()
+    os.environ.pop("GEMINI_API_KEY", None)
     os.environ["OPENAI_API_KEY"] = "sk-test"
     assert voz.tts_configurada()
     os.environ.pop("OPENAI_API_KEY", None)
