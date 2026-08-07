@@ -122,6 +122,13 @@ PREGUNTA 1: ¿Cómo se llama tu negocio?
 PREGUNTA 2: ¿A qué se dedica tu negocio?
             (Qué vendes, qué servicios ofreces, quiénes son tus clientes)
 
+            Si el negocio es un PARQUEADERO, pregunta además:
+            - ¿Qué tipos de vehículos manejas? (carro, moto, bicicleta,
+              camión...)
+            - Las tarifas de cada uno: hora, día completo y mensualidad.
+            Esos datos van al /knowledge y al system prompt — el agente los
+            responde con buscar_conocimiento, nunca los inventa.
+
 PREGUNTA 3: ¿Para qué quieres usar el agente? (una o varias)
             1. Responder preguntas frecuentes
             2. Agendar citas o reservaciones
