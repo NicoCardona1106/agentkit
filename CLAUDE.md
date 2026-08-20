@@ -40,6 +40,7 @@ Lo que el core ya trae (no lo re-implementes):
 | Respuestas en **burbujas cortas con pausas** (humanización) | `agentkit/humanizar.py` |
 | **Notas de voz** → texto (Whisper) y **respuesta en voz** (TTS, opcional) | `agentkit/voz.py` |
 | **Reporte diario** al equipo por WhatsApp (`GET /reporte?token=...`) | `agentkit/reporte.py` |
+| **Modo borrador**: el admin aprueba/edita cada respuesta por WhatsApp antes de que salga (`ok N` / `no N` / `editar N texto`) | `agentkit/borrador.py` |
 | Chat de prueba local sin WhatsApp | `python -m agentkit.chat` |
 
 Estructura de un agente (la capa fina que TÚ generas). Cada agente vive en
@@ -200,6 +201,12 @@ PREGUNTA 12 (opcional): ¿Número de WhatsApp del equipo para recibir avisos?
             (leads nuevos, tickets, clientes derivados, reporte diario)
             Si no tiene, se omite ADMIN_PHONE y los avisos van al log.
 
+            Y si SÍ dio número: ¿quieres aprobar cada respuesta del agente
+            antes de que le llegue al cliente? (MODO_BORRADOR=true —
+            recomendado el primer mes: el borrador llega a tu WhatsApp y
+            respondes "ok N", "no N" o "editar N <texto>". Cuando el agente
+            se gane tu confianza, se quita la variable y vuela solo.)
+
 PREGUNTA 13 (opcional): ¿Quieres que el agente entienda notas de voz?
             Recomendado: Groq (GRATIS) — guiar: console.groq.com → crear cuenta
             → API Keys → Create API Key → GROQ_API_KEY en el .env.
@@ -353,6 +360,7 @@ DATABASE_URL=sqlite+aiosqlite:///./agentkit.db
 # TTS_MODELO=gemini-2.5-flash-preview-tts
 # HUMANIZAR=true                # burbujas cortas con pausas
 # PAUSA_MINUTOS=60              # cuánto se pausa el bot al derivar a humano
+# MODO_BORRADOR=true            # el admin aprueba cada respuesta (ok N / no N / editar N texto)
 ```
 
 #### 3.5 — Infraestructura

@@ -163,6 +163,38 @@ async def _test_memory():
     assert resumen["conversaciones"] >= 1 and len(resumen["leads"]) >= 1
 
 
+async def _test_borrador():
+    from agentkit import borrador, memory
+
+    os.environ["MODO_BORRADOR"] = "true"
+    os.environ["ADMIN_PHONE"] = "whatsapp:+57 300 1112233"
+    assert borrador.activo()
+    assert borrador.es_admin("573001112233") and not borrador.es_admin("573009999999")
+
+    enviados = []
+
+    class FakeProv:
+        async def enviar_mensaje(self, tel, texto):
+            enviados.append((tel, texto))
+            return True
+
+    bid = await memory.crear_borrador("57311", "Hola, ¿en qué te ayudo?")
+    r = await memory.resolver_borrador(bid, "enviado")
+    assert r and r["telefono"] == "57311"
+    assert await memory.resolver_borrador(bid, "enviado") is None  # no se envía dos veces
+
+    await borrador.comando_admin(FakeProv(), "ok 999999")
+    assert "no existe" in enviados[-1][1]
+    bid2 = await memory.crear_borrador("57322", "Vale $10.000")
+    await borrador.comando_admin(FakeProv(), f"editar {bid2} Vale $12.000")
+    assert any(t == "57322" and "12.000" in x for t, x in enviados)
+    await borrador.comando_admin(FakeProv(), "hola")  # sin comando → ayuda + pendientes
+    assert "Pendientes" in enviados[-1][1]
+
+    for var in ("MODO_BORRADOR", "ADMIN_PHONE"):
+        os.environ.pop(var, None)
+
+
 if __name__ == "__main__":
     test_humanizar()
     test_firma_twilio()
@@ -173,4 +205,5 @@ if __name__ == "__main__":
     test_tts()
     test_herramientas_esquemas()
     asyncio.run(_test_memory())
+    asyncio.run(_test_borrador())
     print("OK — todos los self-checks pasaron")

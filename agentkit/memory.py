@@ -67,6 +67,16 @@ class Pausa(Base):
     hasta: Mapped[datetime] = mapped_column(DateTime)
 
 
+class Borrador(Base):
+    """Respuesta pendiente de aprobación del equipo (MODO_BORRADOR)."""
+    __tablename__ = "borradores"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    telefono: Mapped[str] = mapped_column(String(50), index=True)
+    texto: Mapped[str] = mapped_column(Text)
+    estado: Mapped[str] = mapped_column(String(20), default="pendiente")  # pendiente | enviado | descartado
+    creado: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 async def inicializar_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -153,6 +163,38 @@ async def conversacion_pausada(telefono: str) -> bool:
     async with async_session() as session:
         p = await session.get(Pausa, telefono)
         return bool(p and p.hasta > datetime.utcnow())
+
+
+# ── Borradores (MODO_BORRADOR) ────────────────────────────────
+
+async def crear_borrador(telefono: str, texto: str) -> int:
+    async with async_session() as session:
+        b = Borrador(telefono=telefono, texto=texto)
+        session.add(b)
+        await session.commit()
+        return b.id
+
+
+async def resolver_borrador(bid: int, estado: str, texto: str = "") -> dict | None:
+    """Marca un borrador pendiente como enviado/descartado.
+    Devuelve {telefono, texto} o None si no existe o ya fue resuelto."""
+    async with async_session() as session:
+        b = await session.get(Borrador, bid)
+        if not b or b.estado != "pendiente":
+            return None
+        b.estado = estado
+        if texto:
+            b.texto = texto
+        await session.commit()
+        return {"telefono": b.telefono, "texto": b.texto}
+
+
+async def borradores_pendientes(limite: int = 10) -> list[dict]:
+    async with async_session() as session:
+        q = (select(Borrador).where(Borrador.estado == "pendiente")
+             .order_by(Borrador.id.desc()).limit(limite))
+        return [{"id": b.id, "telefono": b.telefono, "texto": b.texto}
+                for b in (await session.execute(q)).scalars().all()]
 
 
 # ── Reporte diario ────────────────────────────────────────────

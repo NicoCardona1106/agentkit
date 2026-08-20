@@ -11,7 +11,7 @@ from dotenv import find_dotenv, load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import PlainTextResponse, Response
 
-from agentkit import brain, humanizar, memory, reporte, voz
+from agentkit import borrador, brain, humanizar, memory, reporte, voz
 from agentkit.providers import MensajeEntrante, obtener_proveedor
 
 load_dotenv(find_dotenv(usecwd=True))  # el .env vive en la carpeta del agente (cwd), no junto al paquete
@@ -76,6 +76,11 @@ async def procesar_mensaje(msg: MensajeEntrante):
 
         logger.info(f"Mensaje de {msg.telefono}: {texto}")
 
+        # MODO_BORRADOR: los mensajes del admin son comandos (ok/no/editar), no chat
+        if borrador.activo() and borrador.es_admin(msg.telefono):
+            await borrador.comando_admin(proveedor, texto)
+            return
+
         if await memory.conversacion_pausada(msg.telefono):
             # Derivado a humano: se guarda el mensaje pero el bot no responde
             await memory.guardar_mensaje(msg.telefono, "user", texto)
@@ -86,6 +91,16 @@ async def procesar_mensaje(msg: MensajeEntrante):
         respuesta = await brain.generar_respuesta(msg.telefono, texto, historial, proveedor)
 
         await memory.guardar_mensaje(msg.telefono, "user", texto)
+
+        # MODO_BORRADOR: la respuesta espera aprobación del admin; el mensaje del
+        # asistente se guarda al aprobarse, para que el historial refleje solo lo
+        # que el cliente realmente recibió.
+        # ponytail: si el cliente escribe de nuevo antes de la aprobación se genera
+        # otro borrador sin ver el anterior — aceptable en el mes de supervisión
+        if borrador.activo():
+            await borrador.proponer(proveedor, msg.telefono, respuesta, texto)
+            return
+
         await memory.guardar_mensaje(msg.telefono, "assistant", respuesta)
 
         # Si el cliente habló, el agente responde con voz (requiere TTS y PUBLIC_URL).
