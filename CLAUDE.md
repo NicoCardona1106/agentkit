@@ -360,6 +360,7 @@ DATABASE_URL=sqlite+aiosqlite:///./agentkit.db
 # TTS_MODELO=gemini-2.5-flash-preview-tts
 # HUMANIZAR=true                # burbujas cortas con pausas
 # PAUSA_MINUTOS=60              # cuánto se pausa el bot al derivar a humano
+# NOMBRE_HUMANO=un asesor       # cómo llama el bot a quien atiende al derivar ("el barbero")
 # MODO_BORRADOR=true            # el admin aprueba cada respuesta (ok N / no N / editar N texto)
 ```
 

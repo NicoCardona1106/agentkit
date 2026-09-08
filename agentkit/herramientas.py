@@ -121,8 +121,9 @@ def obtener_herramientas(telefono: str, proveedor: ProveedorWhatsApp):
                 await memory.pausar_conversacion(telefono, minutos)
                 await notificar.notificar_equipo(
                     proveedor, f"🙋 Cliente {telefono} derivado a humano.\nContexto: {entrada['motivo']}")
-                return ("Conversación derivada: un asesor fue notificado y el bot quedó en pausa. "
-                        "Despídete diciéndole al cliente que un asesor le escribirá en breve.")
+                humano = os.getenv("NOMBRE_HUMANO", "un asesor")  # p. ej. "el barbero", "Carlos"
+                return (f"Conversación derivada: {humano} fue notificado y el bot quedó en pausa. "
+                        f"Despídete diciéndole al cliente que {humano} le escribirá por este mismo chat en breve.")
             if nombre == "crear_link_pago":
                 link = await pagos.crear_link_pago(entrada["concepto"], entrada["monto"])
                 if not link:
