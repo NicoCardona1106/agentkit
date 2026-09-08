@@ -26,10 +26,10 @@ class ProveedorInstagram(ProveedorWhatsApp):
         self.app_secret = os.getenv("IG_APP_SECRET") or os.getenv("META_APP_SECRET")
         self.api_version = "v21.0"
 
-    async def validar_webhook(self, request: Request) -> dict | int | None:
+    async def validar_webhook(self, request: Request) -> str | None:
         params = request.query_params
         if params.get("hub.mode") == "subscribe" and params.get("hub.verify_token") == self.verify_token:
-            return int(params.get("hub.challenge"))
+            return params.get("hub.challenge", "")  # se devuelve tal cual: Meta lo compara como texto
         return None
 
     async def validar_firma(self, request: Request) -> bool:

@@ -24,8 +24,10 @@ Este documento manda sobre cualquier nota anterior; se cambia por decisión expl
 
 - `CLAUDE_MODEL=claude-haiku-4-5`, respuestas cortas (MAX_TOKENS 512), system prompt cacheado.
 - Sonnet 5 solo para casos difíciles (escalada explícita), nunca por defecto.
-- Medido 2026-09-08: ~2.100 tokens de entrada y 30-50 de salida por respuesta → ≈ USD 0,0024 sin
-  caché; con caché del system prompt ≈ USD 1-1,5/cliente/mes a 300 conversaciones.
+- Medido 2026-09-08: ~2.100 tokens de entrada y 30-50 de salida por respuesta → ≈ USD 0,0024 por
+  respuesta ≈ USD 4-5/cliente/mes a 300 conversaciones. El core ya manda `cache_control`, pero
+  Haiku 4.5 solo cachea prefijos ≥ 4.096 tokens (Sonnet 5: ≥ 1.024): un agente pequeño no cachea
+  (verificado: 0 creados); cuando el conocimiento crezca, la parte fija baja al 10 % sola.
 - Gemini gratis descartado (entrena con datos). Qwen local solo si algún día hay GPU.
 
 ## 4. Despliegue: VPS + Hermes cuando haya el primer cliente pago

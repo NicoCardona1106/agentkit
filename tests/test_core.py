@@ -195,6 +195,32 @@ async def _test_borrador():
         os.environ.pop(var, None)
 
 
+def test_webhook_verificacion():
+    """GET /webhook: devuelve el challenge tal cual (aunque no sea numérico) y 403 con token malo."""
+    from fastapi.testclient import TestClient
+    os.environ["PROVIDER"] = "meta"
+    os.environ["META_VERIFY_TOKEN"] = "tok-prueba"
+    from agentkit.providers.meta import ProveedorMeta
+    import agentkit.main as main_mod
+    main_mod.proveedor = ProveedorMeta()
+    c = TestClient(main_mod.app)
+    r = c.get("/webhook", params={"hub.mode": "subscribe", "hub.verify_token": "tok-prueba", "hub.challenge": "abc-123"})
+    assert r.status_code == 200 and r.text == "abc-123", (r.status_code, r.text)
+    r = c.get("/webhook", params={"hub.mode": "subscribe", "hub.verify_token": "malo", "hub.challenge": "1"})
+    assert r.status_code == 403, r.status_code
+    assert c.get("/webhook").status_code == 200  # sin hub.mode sigue siendo un health check
+
+
+async def _test_system_prompt_cacheable():
+    """El system va en 2 bloques: el del negocio con cache_control y el contexto variable aparte."""
+    from agentkit import brain, memory
+    await memory.inicializar_db()
+    bloques = await brain._system_prompt("57300000000")
+    assert isinstance(bloques, list) and len(bloques) == 2
+    assert bloques[0].get("cache_control") == {"type": "ephemeral"}
+    assert "cache_control" not in bloques[1] and "Fecha y hora" in bloques[1]["text"]
+
+
 if __name__ == "__main__":
     test_humanizar()
     test_firma_twilio()
@@ -206,4 +232,6 @@ if __name__ == "__main__":
     test_herramientas_esquemas()
     asyncio.run(_test_memory())
     asyncio.run(_test_borrador())
+    test_webhook_verificacion()
+    asyncio.run(_test_system_prompt_cacheable())
     print("OK — todos los self-checks pasaron")

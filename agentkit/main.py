@@ -59,6 +59,8 @@ async def webhook_verificacion(request: Request):
     resultado = await proveedor.validar_webhook(request)
     if resultado is not None:
         return PlainTextResponse(str(resultado))
+    if request.query_params.get("hub.mode"):  # intento de verificación con token incorrecto
+        raise HTTPException(status_code=403, detail="Verify token inválido")
     return {"status": "ok"}
 
 

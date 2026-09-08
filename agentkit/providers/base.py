@@ -27,8 +27,8 @@ class ProveedorWhatsApp(ABC):
         """Envía un mensaje de texto. Retorna True si fue exitoso."""
         ...
 
-    async def validar_webhook(self, request: Request) -> dict | int | None:
-        """Verificación GET del webhook (solo Meta la requiere)."""
+    async def validar_webhook(self, request: Request) -> str | None:
+        """Verificación GET del webhook (solo Meta la requiere). Devuelve el hub.challenge o None."""
         return None
 
     async def validar_firma(self, request: Request) -> bool:

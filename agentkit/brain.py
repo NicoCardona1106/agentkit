@@ -39,15 +39,26 @@ def obtener_mensaje_fallback() -> str:
         "fallback_message", "Disculpa, no entendí tu mensaje. ¿Podrías reformularlo?")
 
 
-async def _system_prompt(telefono: str) -> str:
-    """System prompt del agente + fecha + memoria de largo plazo del cliente."""
+async def _system_prompt(telefono: str) -> list[dict]:
+    """System prompt en dos bloques: el del negocio (estable, cacheado) y el contexto variable.
+
+    El bloque base lleva cache_control: como el prefijo tools+system no cambia entre mensajes,
+    Claude lo sirve desde caché (~10 % del precio). La fecha y la memoria del cliente van en
+    un bloque aparte para no invalidar la caché en cada minuto.
+    OJO: cada modelo exige un prefijo mínimo para cachear (Haiku 4.5: 4096 tokens; Sonnet 5:
+    1024). Un agente pequeño (~2k tokens de tools+prompt) en Haiku no cachea y no falla:
+    el log muestra "caché: 0 creados". Se activa solo cuando el conocimiento crece.
+    """
     base = cargar_config_prompts().get("system_prompt", "Eres un asistente útil. Responde en español.")
-    partes = [base, f"\n## Contexto actual\nFecha y hora (UTC): {datetime.utcnow():%A %Y-%m-%d %H:%M}"]
+    partes = [f"## Contexto actual\nFecha y hora (UTC): {datetime.utcnow():%A %Y-%m-%d %H:%M}"]
     cliente = await memory.obtener_cliente(telefono)
     if cliente["nombre"] or cliente["notas"]:
-        partes.append("\n## Lo que sabes de este cliente (de conversaciones anteriores)\n"
+        partes.append("## Lo que sabes de este cliente (de conversaciones anteriores)\n"
                       f"Nombre: {cliente['nombre'] or 'desconocido'}\nNotas: {cliente['notas'] or 'ninguna'}")
-    return "\n".join(partes)
+    return [
+        {"type": "text", "text": base, "cache_control": {"type": "ephemeral"}},
+        {"type": "text", "text": "\n\n".join(partes)},
+    ]
 
 
 async def generar_respuesta(telefono: str, mensaje: str, historial: list[dict],
@@ -78,7 +89,10 @@ async def generar_respuesta(telefono: str, mensaje: str, historial: list[dict],
             mensajes.append({"role": "user", "content": resultados})
 
         texto = "".join(b.text for b in respuesta.content if b.type == "text").strip()
-        logger.info(f"Respuesta generada ({respuesta.usage.input_tokens} in / {respuesta.usage.output_tokens} out)")
+        u = respuesta.usage
+        logger.info(f"Respuesta generada ({u.input_tokens} in / {u.output_tokens} out / "
+                    f"caché: {getattr(u, 'cache_read_input_tokens', 0) or 0} leídos, "
+                    f"{getattr(u, 'cache_creation_input_tokens', 0) or 0} creados)")
         return texto or obtener_mensaje_fallback()
     except Exception as e:
         logger.error(f"Error Claude API: {e}")
