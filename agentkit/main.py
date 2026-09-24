@@ -45,7 +45,9 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="AgentKit — WhatsApp AI Agent", version="1.0.0", lifespan=lifespan)
+from agentkit import __version__
+
+app = FastAPI(title="AgentKit — WhatsApp AI Agent", version=__version__, lifespan=lifespan)
 
 
 @app.get("/")

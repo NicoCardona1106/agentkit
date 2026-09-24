@@ -1,6 +1,6 @@
 [project]
 name = "agentkit"
-version = "0.3.0"
+dynamic = ["version"]
 description = "Core compartido para agentes de WhatsApp con IA (AgentKit)"
 requires-python = ">=3.11"
 dependencies = [
@@ -21,3 +21,7 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = ["agentkit*"]
+
+# La versión vive solo en agentkit/__init__.py (antes pyproject quedó fijo en 0.3.0 y pip show mentía).
+[tool.setuptools.dynamic]
+version = {attr = "agentkit.__version__"}
