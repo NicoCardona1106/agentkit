@@ -221,10 +221,11 @@ async def resumen_estado() -> dict:
     """Conteos de las últimas 24h (ventana móvil UTC, no "desde las 00:00") para GET /estado."""
     desde = datetime.utcnow() - timedelta(hours=24)
     async with async_session() as session:
-        entrantes = (await session.execute(select(func.count()).select_from(Mensaje).where(
-            Mensaje.timestamp >= desde, Mensaje.role == "user"))).scalar() or 0
-        salientes = (await session.execute(select(func.count()).select_from(Mensaje).where(
-            Mensaje.timestamp >= desde, Mensaje.role == "assistant"))).scalar() or 0
+        por_role = dict((await session.execute(
+            select(Mensaje.role, func.count()).where(Mensaje.timestamp >= desde).group_by(Mensaje.role)
+        )).all())
+        entrantes = por_role.get("user", 0)
+        salientes = por_role.get("assistant", 0)
         conversaciones = (await session.execute(select(func.count(func.distinct(Mensaje.telefono))).where(
             Mensaje.timestamp >= desde))).scalar() or 0
         leads = (await session.execute(select(func.count()).select_from(Lead).where(
