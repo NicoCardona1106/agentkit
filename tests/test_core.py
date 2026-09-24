@@ -221,6 +221,48 @@ async def _test_system_prompt_cacheable():
     assert "cache_control" not in bloques[1] and "Fecha y hora" in bloques[1]["text"]
 
 
+async def _test_estado():
+    """GET /estado: cifras de las últimas 24h, sin teléfonos ni contenidos, y 403 sin token."""
+    from fastapi.testclient import TestClient
+
+    from agentkit import memory
+    import agentkit.main as main_mod
+
+    await memory.inicializar_db()
+    tel = "test-estado-570000001"
+    await memory.limpiar_historial(tel)
+    await memory.guardar_mensaje(tel, "user", "hola, secreto de prueba")
+    await memory.guardar_mensaje(tel, "assistant", "¡hola!")
+    await memory.crear_lead(tel, "Andrés", "RTX 4070")
+    await memory.crear_ticket(tel, "PC no enciende")
+
+    os.environ["REPORTE_TOKEN"] = "token-prueba"
+    main_mod._iniciado = main_mod.datetime.utcnow()
+    main_mod._arranque_monotonic = main_mod.time.monotonic()
+    c = TestClient(main_mod.app)
+
+    assert c.get("/estado").status_code == 403  # sin token
+    assert c.get("/estado", params={"token": "malo"}).status_code == 403  # token incorrecto
+
+    r = c.get("/estado", params={"token": "token-prueba"})
+    assert r.status_code == 200, r.text
+    data = r.json()
+    claves = {"service", "version", "nombre", "proveedor", "modelo", "uptime_s", "iniciado",
+              "modo_borrador", "ultimas_24h", "tickets_abiertos", "ultimo_mensaje",
+              "borradores_pendientes", "errores_24h"}
+    assert claves <= set(data.keys()), data.keys()
+    assert data["service"] == "agentkit"
+    assert data["ultimas_24h"]["mensajes_entrantes"] >= 1
+    assert data["ultimas_24h"]["mensajes_salientes"] >= 1
+    assert data["ultimas_24h"]["leads"] >= 1
+    assert data["ultimas_24h"]["tickets"] >= 1
+    assert data["tickets_abiertos"] >= 1
+    assert data["ultimo_mensaje"] and "T" in data["ultimo_mensaje"]  # ISO
+    assert tel not in str(data) and "secreto de prueba" not in str(data)  # sin teléfonos ni mensajes
+
+    os.environ.pop("REPORTE_TOKEN", None)
+
+
 if __name__ == "__main__":
     test_humanizar()
     test_firma_twilio()
@@ -234,4 +276,5 @@ if __name__ == "__main__":
     asyncio.run(_test_borrador())
     test_webhook_verificacion()
     asyncio.run(_test_system_prompt_cacheable())
+    asyncio.run(_test_estado())
     print("OK — todos los self-checks pasaron")
