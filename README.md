@@ -73,6 +73,17 @@ Producción: sube la carpeta del agente a GitHub y despliégala en Railway
 (Claude Code te guía paso a paso, incluido PostgreSQL para memoria permanente
 y la configuración del webhook en Meta o Twilio).
 
+## Endpoints para monitoreo
+
+- `GET /reporte?token=<REPORTE_TOKEN>` — genera y envía el reporte diario
+  (leads, tickets, conversaciones) al equipo por WhatsApp.
+- `GET /estado?token=<REPORTE_TOKEN>` — estado del agente en JSON para un
+  panel externo (versión, proveedor, modelo, uptime, modo borrador, cifras
+  de las últimas 24h, tickets abiertos, borradores pendientes y errores).
+  Nunca expone teléfonos ni el contenido de los mensajes.
+
+Ambos comparten `REPORTE_TOKEN`: sin token o con uno incorrecto, 403.
+
 ## Stack
 
 | Componente | Tecnología |

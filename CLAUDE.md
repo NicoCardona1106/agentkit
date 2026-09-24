@@ -40,6 +40,7 @@ Lo que el core ya trae (no lo re-implementes):
 | Respuestas en **burbujas cortas con pausas** (humanización) | `agentkit/humanizar.py` |
 | **Notas de voz** → texto (Whisper) y **respuesta en voz** (TTS, opcional) | `agentkit/voz.py` |
 | **Reporte diario** al equipo por WhatsApp (`GET /reporte?token=...`) | `agentkit/reporte.py` |
+| **Estado del agente en JSON** para un panel externo (`GET /estado?token=...`) | `agentkit/main.py` + `agentkit/estado.py` |
 | **Modo borrador**: el admin aprueba/edita cada respuesta por WhatsApp antes de que salga (`ok N` / `no N` / `editar N texto`) | `agentkit/borrador.py` |
 | Chat de prueba local sin WhatsApp | `python -m agentkit.chat` |
 
