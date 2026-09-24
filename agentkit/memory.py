@@ -213,3 +213,39 @@ async def resumen_dia() -> dict:
             "leads": [{"nombre": l.nombre, "interes": l.interes, "telefono": l.telefono} for l in leads],
             "tickets": [{"id": t.id, "problema": t.problema, "telefono": t.telefono} for t in tickets],
         }
+
+
+# ── Estado del agente (panel externo, GET /estado) ────────────
+
+async def resumen_estado() -> dict:
+    """Conteos de las últimas 24h (ventana móvil UTC, no "desde las 00:00") para GET /estado."""
+    desde = datetime.utcnow() - timedelta(hours=24)
+    async with async_session() as session:
+        por_role = dict((await session.execute(
+            select(Mensaje.role, func.count()).where(Mensaje.timestamp >= desde).group_by(Mensaje.role)
+        )).all())
+        entrantes = por_role.get("user", 0)
+        salientes = por_role.get("assistant", 0)
+        conversaciones = (await session.execute(select(func.count(func.distinct(Mensaje.telefono))).where(
+            Mensaje.timestamp >= desde))).scalar() or 0
+        leads = (await session.execute(select(func.count()).select_from(Lead).where(
+            Lead.creado >= desde))).scalar() or 0
+        tickets = (await session.execute(select(func.count()).select_from(Ticket).where(
+            Ticket.creado >= desde))).scalar() or 0
+        tickets_abiertos = (await session.execute(select(func.count()).select_from(Ticket).where(
+            Ticket.estado == "abierto"))).scalar() or 0
+        borradores = (await session.execute(select(func.count()).select_from(Borrador).where(
+            Borrador.estado == "pendiente"))).scalar() or 0
+        ultimo = (await session.execute(select(func.max(Mensaje.timestamp)))).scalar()
+        return {
+            "ultimas_24h": {
+                "mensajes_entrantes": entrantes,
+                "mensajes_salientes": salientes,
+                "conversaciones": conversaciones,
+                "leads": leads,
+                "tickets": tickets,
+            },
+            "tickets_abiertos": tickets_abiertos,
+            "ultimo_mensaje": ultimo.isoformat() + "Z" if ultimo else None,
+            "borradores_pendientes": borradores,
+        }
