@@ -4,14 +4,16 @@ import asyncio
 import logging
 import os
 import secrets
+import time
 from collections import deque
 from contextlib import asynccontextmanager
+from datetime import datetime
 
 from dotenv import find_dotenv, load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import PlainTextResponse, Response
 
-from agentkit import borrador, brain, humanizar, memory, reporte, voz
+from agentkit import borrador, brain, estado, humanizar, memory, reporte, voz
 from agentkit.providers import MensajeEntrante, obtener_proveedor
 
 load_dotenv(find_dotenv(usecwd=True))  # el .env vive en la carpeta del agente (cwd), no junto al paquete
@@ -19,6 +21,10 @@ load_dotenv(find_dotenv(usecwd=True))  # el .env vive en la carpeta del agente (
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
 logging.basicConfig(level=logging.DEBUG if ENVIRONMENT == "development" else logging.INFO)
 logger = logging.getLogger("agentkit")
+logger.addHandler(estado.contador_errores)  # cuenta ERRORes para GET /estado
+
+_iniciado: datetime | None = None  # marca de arranque (para /estado): UTC y monotónica
+_arranque_monotonic: float | None = None
 
 proveedor = obtener_proveedor()
 
@@ -40,7 +46,10 @@ def _guardar_audio(audio: bytes) -> str:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global _iniciado, _arranque_monotonic
     await memory.inicializar_db()
+    _iniciado = datetime.utcnow()
+    _arranque_monotonic = time.monotonic()
     logger.info(f"AgentKit listo — proveedor: {proveedor.__class__.__name__}")
     yield
 
@@ -156,3 +165,26 @@ async def reporte_diario(token: str = ""):
         raise HTTPException(status_code=403, detail="Token inválido")
     texto = await reporte.enviar_reporte(proveedor)
     return PlainTextResponse(texto)
+
+
+@app.get("/estado")
+async def estado_agente(token: str = ""):
+    """Estado del agente para que un panel externo lo consulte cada pocos minutos.
+    Protegido con REPORTE_TOKEN (misma regla que /reporte). Nunca expone teléfonos ni mensajes."""
+    esperado = os.getenv("REPORTE_TOKEN", "")
+    if not esperado or token != esperado:
+        raise HTTPException(status_code=403, detail="Token inválido")
+    from agentkit import __version__
+    resumen = await memory.resumen_estado()
+    return {
+        "service": "agentkit",
+        "version": __version__,
+        "nombre": estado.nombre_bot(),
+        "proveedor": proveedor.__class__.__name__,
+        "modelo": brain.MODELO,
+        "uptime_s": round(time.monotonic() - _arranque_monotonic, 1) if _arranque_monotonic else 0,
+        "iniciado": _iniciado.isoformat() + "Z" if _iniciado else None,
+        "modo_borrador": borrador.activo(),
+        **resumen,
+        "errores_24h": estado.contador_errores.contar_24h(),
+    }
