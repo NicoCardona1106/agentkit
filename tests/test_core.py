@@ -222,19 +222,20 @@ async def _test_system_prompt_cacheable():
 
 
 async def _test_estado():
-    """GET /estado: cifras de las últimas 24h, sin teléfonos ni contenidos, y 403 sin token."""
+    """GET /estado: diffs exactos entre un llamado base y uno tras insertar datos frescos
+    (la BD temporal no se limpia entre corridas, así que comparar contra un base es lo único
+    que demuestra algo). Un mensaje de hace 25h no debe entrar en la ventana de 24h."""
+    import logging
+    import secrets as secrets_mod
+    from datetime import datetime, timedelta
+
     from fastapi.testclient import TestClient
 
     from agentkit import memory
+    from agentkit.memory import Mensaje, async_session
     import agentkit.main as main_mod
 
     await memory.inicializar_db()
-    tel = "test-estado-570000001"
-    await memory.limpiar_historial(tel)
-    await memory.guardar_mensaje(tel, "user", "hola, secreto de prueba")
-    await memory.guardar_mensaje(tel, "assistant", "¡hola!")
-    await memory.crear_lead(tel, "Andrés", "RTX 4070")
-    await memory.crear_ticket(tel, "PC no enciende")
 
     os.environ["REPORTE_TOKEN"] = "token-prueba"
     main_mod._iniciado = main_mod.datetime.utcnow()
@@ -243,8 +244,22 @@ async def _test_estado():
 
     assert c.get("/estado").status_code == 403  # sin token
     assert c.get("/estado", params={"token": "malo"}).status_code == 403  # token incorrecto
+    assert c.get("/estado", headers={"X-Reporte-Token": "malo"}).status_code == 403
 
-    r = c.get("/estado", params={"token": "token-prueba"})
+    base = c.get("/estado", params={"token": "token-prueba"}).json()
+
+    tel = f"test-estado-{secrets_mod.token_hex(4)}"  # teléfono nuevo: garantiza +1 conversación exacto
+    await memory.guardar_mensaje(tel, "user", "hola, secreto de prueba")
+    await memory.guardar_mensaje(tel, "assistant", "¡hola!")
+    async with async_session() as session:  # mensaje fuera de la ventana de 24h: no debe contar
+        session.add(Mensaje(telefono=tel, role="user", content="viejo",
+                             timestamp=datetime.utcnow() - timedelta(hours=25)))
+        await session.commit()
+    await memory.crear_lead(tel, "Andrés", "RTX 4070")
+    await memory.crear_ticket(tel, "PC no enciende")
+    logging.getLogger("agentkit").error("error de prueba para /estado")
+
+    r = c.get("/estado", headers={"X-Reporte-Token": "token-prueba"})  # cabecera también sirve
     assert r.status_code == 200, r.text
     data = r.json()
     claves = {"service", "version", "nombre", "proveedor", "modelo", "uptime_s", "iniciado",
@@ -252,13 +267,19 @@ async def _test_estado():
               "borradores_pendientes", "errores_24h"}
     assert claves <= set(data.keys()), data.keys()
     assert data["service"] == "agentkit"
-    assert data["ultimas_24h"]["mensajes_entrantes"] >= 1
-    assert data["ultimas_24h"]["mensajes_salientes"] >= 1
-    assert data["ultimas_24h"]["leads"] >= 1
-    assert data["ultimas_24h"]["tickets"] >= 1
-    assert data["tickets_abiertos"] >= 1
+    assert isinstance(data["uptime_s"], float)
+
+    b, u = base["ultimas_24h"], data["ultimas_24h"]
+    assert u["mensajes_entrantes"] == b["mensajes_entrantes"] + 1, (u, b)  # no el de 25h atrás
+    assert u["mensajes_salientes"] == b["mensajes_salientes"] + 1, (u, b)
+    assert u["conversaciones"] == b["conversaciones"] + 1, (u, b)
+    assert u["leads"] == b["leads"] + 1, (u, b)
+    assert u["tickets"] == b["tickets"] + 1, (u, b)
+    assert data["errores_24h"] == base["errores_24h"] + 1, (data["errores_24h"], base["errores_24h"])
     assert data["ultimo_mensaje"] and "T" in data["ultimo_mensaje"]  # ISO
-    assert tel not in str(data) and "secreto de prueba" not in str(data)  # sin teléfonos ni mensajes
+
+    assert tel not in str(data) and "secreto de prueba" not in str(data)
+    assert "Andrés" not in str(data) and "PC no enciende" not in str(data)
 
     os.environ.pop("REPORTE_TOKEN", None)
 
