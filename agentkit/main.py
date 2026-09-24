@@ -168,11 +168,13 @@ async def reporte_diario(token: str = ""):
 
 
 @app.get("/estado")
-async def estado_agente(token: str = ""):
+async def estado_agente(request: Request, token: str = ""):
     """Estado del agente para que un panel externo lo consulte cada pocos minutos.
-    Protegido con REPORTE_TOKEN (misma regla que /reporte). Nunca expone teléfonos ni mensajes."""
+    Protegido con REPORTE_TOKEN (misma regla que /reporte): por query ?token= o, mejor,
+    por cabecera X-Reporte-Token (no queda en los access logs). Nunca expone teléfonos ni mensajes."""
     esperado = os.getenv("REPORTE_TOKEN", "")
-    if not esperado or token != esperado:
+    recibido = request.headers.get("X-Reporte-Token") or token
+    if not esperado or not secrets.compare_digest(recibido.encode(), esperado.encode()):
         raise HTTPException(status_code=403, detail="Token inválido")
     from agentkit import __version__
     resumen = await memory.resumen_estado()
@@ -182,7 +184,7 @@ async def estado_agente(token: str = ""):
         "nombre": estado.nombre_bot(),
         "proveedor": proveedor.__class__.__name__,
         "modelo": brain.MODELO,
-        "uptime_s": round(time.monotonic() - _arranque_monotonic, 1) if _arranque_monotonic else 0,
+        "uptime_s": round(time.monotonic() - _arranque_monotonic, 1) if _arranque_monotonic else 0.0,
         "iniciado": _iniciado.isoformat() + "Z" if _iniciado else None,
         "modo_borrador": borrador.activo(),
         **resumen,
