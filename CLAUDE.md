@@ -38,7 +38,8 @@ Lo que el core ya trae (no lo re-implementes):
 | Canales: **WhatsApp** (Meta Cloud API o Twilio) e **Instagram DM**, con validación de firma de webhooks | `agentkit/providers/` |
 | Herramientas base: buscar conocimiento, registrar lead, crear ticket, recordar cliente, **derivar a humano** (pausa el bot y avisa al equipo), **link de pago** (Wompi / MercadoPago / Stripe) | `agentkit/herramientas.py` |
 | Respuestas en **burbujas cortas con pausas** (humanización) | `agentkit/humanizar.py` |
-| **Notas de voz** → texto (Whisper) y **respuesta en voz** (TTS, opcional) | `agentkit/voz.py` |
+| **Notas de voz** → texto (OpenAI `gpt-4o-mini-transcribe`) y **respuesta en voz** natural (OpenAI `gpt-4o-mini-tts`, opcional; voz e instrucciones configurables en .env) | `agentkit/voz.py` |
+| **Costo en USD por agente**: cada llamada a Claude/STT/TTS queda en la tabla `uso_api`; `/estado` devuelve `costo_usd` (hoy, mes, desglose) | `agentkit/precios.py` + `agentkit/memory.py` |
 | **Reporte diario** al equipo por WhatsApp (`GET /reporte?token=...`) | `agentkit/reporte.py` |
 | **Estado del agente en JSON** para un panel externo (`GET /estado?token=...`) | `agentkit/main.py` + `agentkit/estado.py` |
 | **Modo borrador**: el admin aprueba/edita cada respuesta por WhatsApp antes de que salga (`ok N` / `no N` / `editar N texto`) | `agentkit/borrador.py` |
@@ -62,7 +63,8 @@ agentes/mi-agente/
 └── .env                   ← API keys (NUNCA va a GitHub)
 ```
 
-Modelo de IA: `claude-sonnet-5` por defecto (configurable con `CLAUDE_MODEL` en .env).
+Modelo de IA: `claude-haiku-4-5` por defecto (configurable con `CLAUDE_MODEL` en .env).
+`claude-sonnet-5` solo como escalada explícita para casos difíciles, nunca por defecto.
 
 ---
 
@@ -209,17 +211,26 @@ PREGUNTA 12 (opcional): ¿Número de WhatsApp del equipo para recibir avisos?
             se gane tu confianza, se quita la variable y vuela solo.)
 
 PREGUNTA 13 (opcional): ¿Quieres que el agente entienda notas de voz?
-            Recomendado: Groq (GRATIS) — guiar: console.groq.com → crear cuenta
-            → API Keys → Create API Key → GROQ_API_KEY en el .env.
-            Alternativa: OpenAI (OPENAI_API_KEY, ~$0.006/min).
+            Recomendado: OpenAI (OPENAI_API_KEY) — guiar: platform.openai.com →
+            API keys → Create new secret key → OPENAI_API_KEY en el .env.
+            Transcribe con gpt-4o-mini-transcribe (~USD 0,003/min).
+            Opcional: Groq gratis (GROQ_API_KEY + STT_PROVEEDOR=groq), o se usa
+            solo si no hay key de OpenAI.
             Si NO → el agente pedirá amablemente que le escriban el mensaje.
 
             Y si SÍ: ¿quieres que también RESPONDA con voz cuando el cliente
-            le hable? Opciones (además requiere PUBLIC_URL configurada — el
-            proveedor descarga el audio desde /audio/{id}):
-            - GEMINI_API_KEY (capa GRATIS en aistudio.google.com) + ffmpeg
-              instalado (convierte el PCM de Gemini a mp3)
-            - OPENAI_API_KEY (~$0.015/min, mp3 directo, sin ffmpeg)
+            le hable? La meta es que el cliente nunca sienta que habla con un
+            bot. Con la misma OPENAI_API_KEY responde con gpt-4o-mini-tts
+            (~USD 0,015/min, mp3 directo, sin ffmpeg). Además requiere
+            PUBLIC_URL configurada (el proveedor descarga el audio desde /audio/{id}).
+            - TTS_VOZ: marin (default), coral o cedar — la que gane la prueba
+              de oído; ofrécele escuchar las tres antes de fijarla.
+            - TTS_INSTRUCCIONES: cómo habla (tono, acento, ritmo). Default:
+              español de Colombia, cálido, cercano y conversacional, ritmo
+              natural, nada de locutor ni de robot. Ajústalo al tono del
+              negocio sin tocar código.
+            - Gemini (GEMINI_API_KEY + ffmpeg) queda SOLO como respaldo si no
+              hay key de OpenAI; no lo ofrezcas como primera opción.
             Regla: si el cliente mandó nota de voz, el agente responde SOLO con
             nota de voz; el texto se envía únicamente si la voz falló o si la
             respuesta trae un link (que la voz no puede transmitir).
@@ -352,13 +363,15 @@ DATABASE_URL=sqlite+aiosqlite:///./agentkit.db
 # PAGOS_MONEDA=COP              # solo si difiere del default de la pasarela
 
 # Opcionales
-# CLAUDE_MODEL=claude-sonnet-5
+# CLAUDE_MODEL=claude-haiku-4-5  # default; claude-sonnet-5 solo como escalada
 # ADMIN_PHONE=+57...            # avisos al equipo (leads, tickets, derivaciones, reporte)
-# REPORTE_TOKEN=un-token-secreto  # habilita GET /reporte?token=...
-# GEMINI_API_KEY=AIza...        # respuesta en voz (TTS gratis; requiere ffmpeg)
-# OPENAI_API_KEY=sk-...         # notas de voz (Whisper) y/o TTS (mp3 directo)
-# TTS_VOZ=Kore                  # voz del TTS (Gemini: Kore, Puck… / OpenAI: nova, alloy…)
-# TTS_MODELO=gemini-2.5-flash-preview-tts
+# REPORTE_TOKEN=un-token-secreto  # habilita GET /reporte y GET /estado (con costo_usd)
+# OPENAI_API_KEY=sk-...         # notas de voz (gpt-4o-mini-transcribe) y respuesta en voz (gpt-4o-mini-tts)
+# TTS_VOZ=marin                 # marin | coral | cedar (según la prueba de oído)
+# TTS_INSTRUCCIONES="Habla en español de Colombia, con tono cálido, cercano y conversacional, a ritmo natural, como una persona amable que atiende por WhatsApp; nada de locutor ni de robot."
+# STT_PROVEEDOR=groq            # solo si se quiere transcribir gratis con Groq
+# GROQ_API_KEY=gsk_...          # respaldo de transcripción
+# GEMINI_API_KEY=AIza...        # respaldo de la voz de salida si no hay OpenAI (requiere ffmpeg)
 # HUMANIZAR=true                # burbujas cortas con pausas
 # PAUSA_MINUTOS=60              # cuánto se pausa el bot al derivar a humano
 # NOMBRE_HUMANO=un asesor       # cómo llama el bot a quien atiende al derivar ("el barbero")
