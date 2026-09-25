@@ -834,8 +834,8 @@ def test_tts_gpt_audio_payload_guarda_y_costo():
             assert [f["proveedor"] for f in filas] == ["openai-audio", "openai"]
             assert filas[0]["usd"] == "0.0552000000"  # la llamada descartada también se cobra
 
-        # Voz de gpt-4o-mini-tts que no está en VOCES_GPT_AUDIO: gpt-audio usa marin
-        os.environ["OPENAI_TTS_VOZ"] = "nova"
+        # Voz que no es de OpenAI (p. ej. una de Gemini): gpt-audio usa marin
+        os.environ["OPENAI_TTS_VOZ"] = "Kore"
         dicho[0] = texto
         assert asyncio.run(voz.sintetizar(texto)) == b"mp3-o3"
         assert json.loads(enviados[-1].content)["audio"]["voice"] == "marin"

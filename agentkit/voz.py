@@ -47,9 +47,9 @@ logger = logging.getLogger("agentkit")
 # ai.google.dev/gemini-api/docs/speech-generation.
 VOCES_OPENAI = {"alloy", "ash", "ballad", "coral", "echo", "fable", "onyx", "nova", "sage",
                 "shimmer", "verse", "marin", "cedar"}
-# gpt-audio (Chat Completions con audio). SIN VERIFICAR en la referencia de la API (2026-09-25): es
-# la lista de voces de los modelos gpt-realtime/gpt-audio que dio el revisor (sin fable/onyx/nova).
-VOCES_GPT_AUDIO = {"alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse", "marin", "cedar"}
+# gpt-audio (Chat Completions con audio) acepta las mismas voces: verificado 2026-09-25 con llamadas
+# reales a gpt-audio-1.5 (nova, fable, onyx, verse y ballad respondieron OK).
+VOCES_GPT_AUDIO = VOCES_OPENAI
 VOCES_GEMINI = {"Zephyr", "Puck", "Charon", "Kore", "Fenrir", "Leda", "Orus", "Aoede", "Callirrhoe",
                 "Autonoe", "Enceladus", "Iapetus", "Umbriel", "Algieba", "Despina", "Erinome",
                 "Algenib", "Rasalgethi", "Laomedeia", "Achernar", "Alnilam", "Schedar", "Gacrux",

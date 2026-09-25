@@ -128,7 +128,7 @@ agentes con `pip install --upgrade`.
     jamás, hoy, mañana, ayer, días de la semana) deben coincidir exactas y en orden; umbral 0,95
     desde 20 palabras; se unifican `a. m.`/`p. m.` y los miles `30.000`/`30,000`/`30 000`. La
     guarda compara la transcripción que devuelve el modelo, no un reconocimiento del mp3.
-  - `VOCES_GPT_AUDIO` propio para `gpt-audio` (lista sin verificar en la referencia de la API).
+  - `VOCES_GPT_AUDIO` = las mismas voces de `gpt-4o-mini-tts` (verificado con llamadas reales el 2026-09-25).
   - En `MODO_BORRADOR` no se responde en voz ni se pide texto de voz.
 
 ## Pendientes conocidos
@@ -147,4 +147,4 @@ agentes con `pip install --upgrade`.
 - Voz O3: una llamada a `gpt-audio` que vence por timeout (o que corta `VOZ_TIMEOUT_TOTAL`) puede
   haberse cobrado en OpenAI sin dejar fila en `uso_api` (no llegó el `usage`). Si pasa seguido, el
   costo real quedará por encima del registrado.
-- Voz O3: confirmar `VOCES_GPT_AUDIO` en la referencia de Chat Completions de OpenAI.
+- ~~Voz O3: confirmar `VOCES_GPT_AUDIO`~~ HECHO 2026-09-25 (llamadas reales: todas las voces de OpenAI sirven).
