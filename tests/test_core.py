@@ -95,16 +95,22 @@ def test_pagos_seleccion():
 
 
 def test_voz_config():
+    """STT: OpenAI gpt-4o-mini-transcribe si hay key; Groq si se fuerza o si no hay key de OpenAI."""
     from agentkit import voz
 
-    for var in ("GROQ_API_KEY", "OPENAI_API_KEY"):
+    for var in ("GROQ_API_KEY", "OPENAI_API_KEY", "STT_PROVEEDOR", "VOZ_MODELO"):
         os.environ.pop(var, None)
     assert not voz.voz_configurada()
-    os.environ["OPENAI_API_KEY"] = "sk-test"
-    assert "openai.com" in voz._config()[0]
     os.environ["GROQ_API_KEY"] = "gsk-test"
-    assert "groq.com" in voz._config()[0]  # Groq (gratis) tiene prioridad
-    for var in ("GROQ_API_KEY", "OPENAI_API_KEY"):
+    assert voz._config()[0] == "groq" and "groq.com" in voz._config()[1]  # sin key de OpenAI
+    os.environ["OPENAI_API_KEY"] = "sk-test"
+    proveedor, url, _, modelo = voz._config()
+    assert proveedor == "openai" and "openai.com" in url and modelo == "gpt-4o-mini-transcribe"
+    os.environ["STT_PROVEEDOR"] = "groq"
+    assert voz._config()[0] == "groq"  # forzado
+    os.environ.pop("GROQ_API_KEY")
+    assert voz._config() is None  # forzado sin su key: no cae a otro proveedor
+    for var in ("OPENAI_API_KEY", "STT_PROVEEDOR"):
         os.environ.pop(var, None)
 
 
@@ -120,6 +126,21 @@ def test_tts():
     os.environ["OPENAI_API_KEY"] = "sk-test"
     assert voz.tts_configurada()
     os.environ.pop("OPENAI_API_KEY", None)
+
+    # Selección de proveedor TTS por env
+    os.environ.pop("TTS_PROVEEDOR", None)
+    os.environ["OPENAI_API_KEY"] = "sk-test"
+    os.environ["GEMINI_API_KEY"] = "AIza-test"
+    assert voz._elegir(voz._TTS, "TTS_PROVEEDOR") == "openai"  # default con ambas keys
+    os.environ["TTS_PROVEEDOR"] = "gemini"
+    assert voz._elegir(voz._TTS, "TTS_PROVEEDOR") == "gemini"
+    os.environ["TTS_PROVEEDOR"] = "elevenlabs"  # aún no implementado: sin voz, no otro proveedor
+    assert not voz.tts_configurada()
+    os.environ["TTS_PROVEEDOR"] = "gemini"
+    os.environ.pop("GEMINI_API_KEY")
+    assert not voz.tts_configurada()  # forzado sin su key
+    for var in ("OPENAI_API_KEY", "TTS_PROVEEDOR"):
+        os.environ.pop(var, None)
 
     hablado = voz.texto_para_voz("*Plan Pro*: $99.000/mes.\n\nPaga aquí: https://wompi.co/l/abc123")
     assert "http" not in hablado and "*" not in hablado and "\n" not in hablado
@@ -284,6 +305,225 @@ async def _test_estado():
     os.environ.pop("REPORTE_TOKEN", None)
 
 
+def test_precios_decimal():
+    """Costo con Decimal: LLM con caché, audio por minuto, mínimo de Groq y override por JSON."""
+    import json
+    from decimal import Decimal
+
+    from agentkit import precios
+
+    os.environ["PRECIOS_ARCHIVO"] = os.path.join(tempfile.gettempdir(), "agentkit_precios_no_existe.json")
+    # Haiku 4.5: 1000 in x 1 + 100 out x 5 + 2000 caché leída x 0.10 + 500 caché escrita x 1.25 (USD/M)
+    usd = precios.costo_llm("claude-haiku-4-5", 1000, 100, 2000, 500)
+    assert isinstance(usd, Decimal) and usd == Decimal("0.002325"), usd
+    assert precios.costo_llm("claude-haiku-4-5-20251001", 1000, 100, 2000, 500) == usd  # ID con fecha
+    assert precios.costo_llm("claude-sonnet-5", 1_000_000, 0) == Decimal("2")
+    assert precios.costo_llm("modelo-desconocido", 1000, 1000) == Decimal(0)
+
+    assert precios.costo_audio("gpt-4o-mini-transcribe", Decimal(30)) == Decimal("0.0015")
+    assert precios.costo_audio("gpt-4o-mini-tts", Decimal(60)) == Decimal("0.015")
+    # Groq whisper-large-v3: USD 0.111/hora con mínimo facturado de 10 s
+    assert precios.costo_audio("whisper-large-v3", Decimal(3)) == Decimal("0.111") / 60 * 10 / 60
+
+    ruta = os.path.join(tempfile.gettempdir(), "agentkit_precios_test.json")
+    with open(ruta, "w", encoding="utf-8") as f:
+        json.dump({"claude-haiku-4-5": {"salida": 4.5}, "modelo-nuevo": {"minuto": "0.01"}}, f)
+    os.environ["PRECIOS_ARCHIVO"] = ruta
+    try:
+        assert precios.costo_llm("claude-haiku-4-5", 0, 1_000_000) == Decimal("4.5")
+        assert precios.costo_llm("claude-haiku-4-5", 1_000_000, 0) == Decimal("1")  # lo demás sigue
+        assert precios.costo_audio("modelo-nuevo", Decimal(120)) == Decimal("0.02")
+    finally:
+        os.environ.pop("PRECIOS_ARCHIVO")
+        os.remove(ruta)
+
+
+def test_duracion_audio():
+    """OGG/Opus: duración exacta del granule de la última página; otro formato: por tamaño."""
+    from decimal import Decimal
+
+    from agentkit import voz
+
+    def pagina(granulo: int) -> bytes:
+        return b"OggS" + bytes(2) + granulo.to_bytes(8, "little") + bytes(20)
+
+    assert voz.duracion_audio(pagina(0) + pagina(48000 * 7)) == Decimal(7)
+    assert voz.duracion_audio(bytes(4000)) == Decimal(2)  # estimado a 2.000 bytes/s
+
+
+def test_modelo_default_haiku():
+    import importlib
+
+    from agentkit import brain
+
+    previo = os.environ.pop("CLAUDE_MODEL", None)
+    try:
+        assert importlib.reload(brain).MODELO == "claude-haiku-4-5"
+        os.environ["CLAUDE_MODEL"] = "claude-sonnet-5"
+        assert importlib.reload(brain).MODELO == "claude-sonnet-5"  # override por env
+    finally:
+        os.environ.pop("CLAUDE_MODEL", None)
+        if previo:
+            os.environ["CLAUDE_MODEL"] = previo
+        importlib.reload(brain)
+
+
+class _Usage:
+    input_tokens = 2000
+    output_tokens = 40
+    cache_read_input_tokens = 1000
+    cache_creation_input_tokens = 0
+
+
+class _FakeAnthropic:
+    """Cliente falso: una sola respuesta de texto, sin herramientas."""
+    class messages:
+        @staticmethod
+        async def create(**kwargs):
+            from types import SimpleNamespace
+            return SimpleNamespace(stop_reason="end_turn", usage=_Usage(),
+                                   content=[SimpleNamespace(type="text", text="¡Hola! ¿En qué te ayudo?")])
+
+
+def test_costo_llm_registrado_y_fallo_no_rompe():
+    """brain registra una fila llm con el usage real; si el registro revienta, la respuesta sale igual."""
+    from decimal import Decimal
+
+    from agentkit import brain, memory, precios
+
+    async def correr():
+        await memory.inicializar_db()
+        filas = []
+
+        async def capturar(**campos):
+            filas.append(campos)
+
+        async def reventar(**campos):
+            raise RuntimeError("BD caída")
+
+        cliente_real, registrar_real = brain.client, memory.registrar_uso
+        brain.client = _FakeAnthropic()
+        try:
+            memory.registrar_uso = capturar
+            assert await brain.generar_respuesta("57300", "hola", [], None) == "¡Hola! ¿En qué te ayudo?"
+            (fila,) = filas
+            assert fila["tipo"] == "llm" and fila["modelo"] == brain.MODELO
+            assert fila["tokens_entrada"] == 2000 and fila["tokens_cache_lectura"] == 1000
+            assert Decimal(fila["usd"]) == precios.costo_llm(brain.MODELO, 2000, 40, 1000, 0)
+
+            memory.registrar_uso = reventar
+            assert await brain.generar_respuesta("57300", "hola", [], None) == "¡Hola! ¿En qué te ayudo?"
+        finally:
+            brain.client, memory.registrar_uso = cliente_real, registrar_real
+
+    asyncio.run(correr())
+
+
+def test_tts_openai_payload_y_costo():
+    """OpenAI TTS manda voz + instructions (mp3) y registra una fila tts con los caracteres;
+    un registro que falla no impide devolver el audio. Sin red: transporte falso de httpx."""
+    import json
+
+    import httpx
+
+    from agentkit import memory, voz
+
+    enviados = []
+
+    def responder(request):
+        enviados.append(request)
+        return httpx.Response(200, content=b"ID3-mp3-falso")
+
+    async def correr():
+        await memory.inicializar_db()
+        filas = []
+
+        async def capturar(**campos):
+            filas.append(campos)
+
+        async def reventar(**campos):
+            raise RuntimeError("BD caída")
+
+        cliente_real, registrar_real = httpx.AsyncClient, memory.registrar_uso
+        httpx.AsyncClient = lambda **kw: cliente_real(transport=httpx.MockTransport(responder), **kw)
+        for var in ("TTS_PROVEEDOR", "TTS_MODELO", "TTS_VOZ", "TTS_INSTRUCCIONES", "GEMINI_API_KEY"):
+            os.environ.pop(var, None)
+        os.environ["OPENAI_API_KEY"] = "sk-test"
+        try:
+            memory.registrar_uso = capturar
+            assert await voz.sintetizar("Hola, claro que sí") == b"ID3-mp3-falso"
+            cuerpo = json.loads(enviados[-1].content)
+            assert cuerpo["model"] == "gpt-4o-mini-tts" and cuerpo["voice"] == "marin"
+            assert cuerpo["response_format"] == "mp3" and "Colombia" in cuerpo["instructions"]
+            (fila,) = filas
+            assert fila["tipo"] == "tts" and fila["caracteres"] == len("Hola, claro que sí")
+
+            os.environ["TTS_INSTRUCCIONES"] = "Habla como paisa"
+            memory.registrar_uso = reventar
+            assert await voz.sintetizar("Hola") == b"ID3-mp3-falso"
+            assert json.loads(enviados[-1].content)["instructions"] == "Habla como paisa"
+        finally:
+            httpx.AsyncClient, memory.registrar_uso = cliente_real, registrar_real
+            for var in ("OPENAI_API_KEY", "TTS_INSTRUCCIONES"):
+                os.environ.pop(var, None)
+
+    asyncio.run(correr())
+
+
+def test_estado_costo():
+    """GET /estado agrega costo_usd {hoy, mes, desglose} en texto decimal, con días de Bogotá.
+    Compara diffs contra una base (la BD temporal no se limpia entre corridas)."""
+    from datetime import datetime, timedelta, timezone
+    from decimal import Decimal
+
+    from fastapi.testclient import TestClient
+
+    from agentkit import memory
+    import agentkit.main as main_mod
+
+    async def insertar():
+        ahora = datetime.utcnow()
+        hoy_bogota = datetime.now(memory.BOGOTA).replace(hour=0, minute=0, second=0, microsecond=0)
+        antes_de_hoy = hoy_bogota.astimezone(timezone.utc).replace(tzinfo=None) - timedelta(seconds=1)
+        base = dict(proveedor="x", modelo="x")
+        await memory.registrar_uso(tipo="llm", usd="0.001", creado_en=ahora, **base)
+        await memory.registrar_uso(tipo="stt", usd="0.0002", creado_en=ahora, **base)
+        await memory.registrar_uso(tipo="tts", usd="0.0003", creado_en=ahora, **base)
+        # 1 s antes de la medianoche de Bogotá: no es de hoy (aunque en UTC pueda serlo)
+        await memory.registrar_uso(tipo="llm", usd="0.01", creado_en=antes_de_hoy, **base)
+        await memory.registrar_uso(tipo="llm", usd="5", creado_en=ahora - timedelta(days=40), **base)
+        return hoy_bogota.day != 1  # el de anoche entra al mes solo si hoy no es día 1
+
+    asyncio.run(memory.inicializar_db())
+    os.environ["REPORTE_TOKEN"] = "token-prueba"
+    c = TestClient(main_mod.app)
+    try:
+        antes = c.get("/estado", headers={"X-Reporte-Token": "token-prueba"}).json()
+        anoche_en_mes = asyncio.run(insertar())
+        r = c.get("/estado", headers={"X-Reporte-Token": "token-prueba"})
+        assert r.status_code == 200, r.text
+        despues = r.json()
+    finally:
+        os.environ.pop("REPORTE_TOKEN", None)
+
+    assert {"ultimas_24h", "errores_24h", "modelo", "version"} <= set(despues)  # campos previos intactos
+    a, d = antes["costo_usd"], despues["costo_usd"]
+    assert isinstance(d["hoy"], str) and isinstance(d["desglose"]["llm"], str)  # nunca float
+
+    def diff(*ruta):
+        x, y = a, d
+        for k in ruta:
+            x, y = x[k], y[k]
+        return Decimal(y) - Decimal(x)
+
+    extra = Decimal("0.01") if anoche_en_mes else Decimal(0)
+    assert diff("hoy") == Decimal("0.0015"), (a, d)
+    assert diff("mes") == Decimal("0.0015") + extra, (a, d)
+    assert diff("desglose", "llm") == Decimal("0.001") + extra
+    assert diff("desglose", "stt") == Decimal("0.0002")
+    assert diff("desglose", "tts") == Decimal("0.0003")
+
+
 if __name__ == "__main__":
     test_humanizar()
     test_firma_twilio()
@@ -298,4 +538,10 @@ if __name__ == "__main__":
     test_webhook_verificacion()
     asyncio.run(_test_system_prompt_cacheable())
     asyncio.run(_test_estado())
+    test_precios_decimal()
+    test_duracion_audio()
+    test_modelo_default_haiku()
+    test_costo_llm_registrado_y_fallo_no_rompe()
+    test_tts_openai_payload_y_costo()
+    test_estado_costo()
     print("OK — todos los self-checks pasaron")

@@ -191,4 +191,5 @@ async def estado_agente(request: Request, token: str = ""):
         "modo_borrador": borrador.activo(),
         **resumen,
         "errores_24h": estado.contador_errores.contar_24h(),
+        "costo_usd": await memory.resumen_costos(),  # {hoy, mes, desglose del mes}, texto decimal
     }

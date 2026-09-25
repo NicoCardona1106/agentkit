@@ -74,6 +74,23 @@ agentes con `pip install --upgrade`.
   Meta para producción, Instagram para marcas con audiencia ahí), pasarela por
   país, y hosting según el caso (Railway default; Render/Fly/Cloud Run/VPS).
 
+## v0.7.0 (2026-09-25) — Haiku por defecto, voz humana configurable y costo por agente
+
+- **Modelo:** `claude-haiku-4-5` por defecto (alias de la API; `CLAUDE_MODEL=claude-haiku-4-5-20251001`
+  fija la versión). Sonnet 5 solo con `CLAUDE_MODEL` explícito. Se conserva `cache_control`.
+- **Voz de entrada:** OpenAI `gpt-4o-mini-transcribe` si hay `OPENAI_API_KEY`; Groq solo si
+  `STT_PROVEEDOR=groq` o si no hay key de OpenAI (antes Groq tenía prioridad).
+- **Voz de salida:** `TTS_PROVEEDOR` (openai por defecto, gemini de respaldo) con tabla de
+  proveedores en `voz.py` para sumar otros sin reescribir. OpenAI con `TTS_VOZ` (default `marin`)
+  y `TTS_INSTRUCCIONES` (default: español de Colombia, cálido y conversacional). Sigue en mp3.
+  Pendiente la prueba de oído marin / coral / cedar.
+- **Costo en USD por agente:** tabla `uso_api` (se crea sola al arrancar), una fila por llamada a
+  Claude, STT o TTS. `agentkit/precios.py` con precios verificados en las páginas oficiales y
+  override en `config/precios.json`. Todo con `Decimal`; un fallo al registrar solo se loguea.
+  `GET /estado` agrega `costo_usd {hoy, mes, desglose}` (hora de Bogotá) sin tocar los campos previos.
+- **Dependencias:** `sqlalchemy[asyncio]` (trae greenlet; un venv limpio fallaba sin él).
+- Pruebas: `pytest -q` → 15 pruebas sin red ni APIs reales (y `python tests/test_core.py` corre además los self-checks async).
+
 ## Pendientes conocidos
 
 - Verificar el shape exacto de los APIs de pago (Wompi payment_links,
