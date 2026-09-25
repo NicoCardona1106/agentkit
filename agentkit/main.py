@@ -100,8 +100,13 @@ async def procesar_mensaje(msg: MensajeEntrante):
             logger.info(f"Conversación {msg.telefono} pausada — sin respuesta del bot")
             return
 
+        # Si el cliente habló, el agente responde con voz (requiere TTS y PUBLIC_URL); el cerebro
+        # lo sabe para escribir frases de corrido que suenen naturales.
+        public_url = os.getenv("PUBLIC_URL", "").rstrip("/")
+        en_voz = bool(msg.audio_ref and public_url and voz.tts_configurada())
+
         historial = await memory.obtener_historial(msg.telefono)
-        respuesta = await brain.generar_respuesta(msg.telefono, texto, historial, proveedor)
+        respuesta = await brain.generar_respuesta(msg.telefono, texto, historial, proveedor, en_voz=en_voz)
 
         await memory.guardar_mensaje(msg.telefono, "user", texto)
 
@@ -116,17 +121,18 @@ async def procesar_mensaje(msg: MensajeEntrante):
 
         await memory.guardar_mensaje(msg.telefono, "assistant", respuesta)
 
-        # Si el cliente habló, el agente responde con voz (requiere TTS y PUBLIC_URL).
         # El texto solo se envía si la voz falló o si la respuesta trae un link
         # (la nota de voz no puede transmitirlo).
         respondido_en_voz = False
-        public_url = os.getenv("PUBLIC_URL", "").rstrip("/")
-        if msg.audio_ref and voz.tts_configurada() and public_url:
-            audio_out = await voz.sintetizar(voz.texto_para_voz(respuesta))
-            if audio_out:
-                aid = _guardar_audio(audio_out)
-                respondido_en_voz = await proveedor.enviar_audio_url(
-                    msg.telefono, f"{public_url}/audio/{aid}")
+        if en_voz:
+            try:  # un fallo de voz nunca se lleva la respuesta de texto
+                audio_out = await voz.sintetizar(voz.texto_para_voz(respuesta))
+                if audio_out:
+                    aid = _guardar_audio(audio_out)
+                    respondido_en_voz = await proveedor.enviar_audio_url(
+                        msg.telefono, f"{public_url}/audio/{aid}")
+            except Exception as e:
+                logger.error(f"Falló la respuesta en voz, sale en texto: {e!r}")
 
         if not respondido_en_voz or "http" in respuesta:
             await humanizar.enviar_humanizado(proveedor, msg.telefono, respuesta)

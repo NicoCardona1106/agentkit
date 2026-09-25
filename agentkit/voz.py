@@ -5,27 +5,36 @@
 #   - GROQ_API_KEY   → Groq whisper-large-v3 (capa gratis) — si no hay key de OpenAI
 #   STT_PROVEEDOR=openai|groq fuerza uno (y solo ese; sin su key, el agente queda sin STT).
 #   VOZ_MODELO cambia el modelo.
-# Salida (texto → audio, siempre mp3). Decisión 2026-09-25, tras la prueba de oído: Gemini
-# gemini-2.5-flash-preview-tts con la voz Kore; OpenAI queda de respaldo si no hay
-# GEMINI_API_KEY. TTS_PROVEEDOR=gemini|openai fuerza uno.
-#   - gemini → GEMINI_TTS_VOZ o TTS_VOZ (default Kore). Devuelve PCM: requiere ffmpeg para mp3.
-#     Usar una key con facturación activa: en el tier gratis Google puede entrenar con los datos
-#     (choca con la Ley 1581 frente al cliente).
-#   - openai → gpt-4o-mini-tts, mp3 directo. OPENAI_TTS_VOZ o TTS_VOZ (default marin).
-#   TTS_INSTRUCCIONES (tono, acento y ritmo) aplica a los dos: OpenAI la recibe en `instructions`;
-#   Gemini no tiene ese campo y la recibe antepuesta al texto (ver _texto_gemini).
-#   TTS_MODELO cambia el modelo. Forzar un proveedor sin su key deja al agente sin voz de salida.
+# Salida (texto → audio, siempre mp3). Decisión de Nicolas 2026-09-25 (prueba de oído a ciegas,
+# muestra «O3»): el modelo conversacional gpt-audio-1.5 con la voz marin, por Chat Completions con
+# audio (no /v1/audio/speech), la más humana de la prueba (~USD 0,08/min, ~5× el TTS barato).
+#   - openai-audio → gpt-audio-1.5 (OPENAI_AUDIO_MODELO o TTS_MODELO, solo gpt-audio*). Es
+#     conversacional y puede cambiar el texto: la guarda es_fiel compara su transcript con lo pedido
+#     y, si no coincide (o cambia un número), descarta el audio y pasa al respaldo.
+#   - openai → gpt-4o-mini-tts, mp3 directo (respaldo 1).
+#   - gemini → gemini-2.5-flash-preview-tts, GEMINI_TTS_VOZ o TTS_VOZ (default Kore; respaldo 2).
+#     Devuelve PCM: requiere ffmpeg para mp3. Usar una key con facturación activa: en el tier
+#     gratis Google puede entrenar con los datos (choca con la Ley 1581 frente al cliente).
+#   Las dos de OpenAI usan OPENAI_TTS_VOZ o TTS_VOZ (default marin).
+#   TTS_PROVEEDOR elige el primero (default: el primero de _TTS con key); si falla, se intentan los
+#   respaldos (_RESPALDOS) que tengan key. Forzar un proveedor sin su key deja al agente sin voz.
+#   TTS_INSTRUCCIONES (tono, acento y ritmo) aplica a todos: gpt-audio la recibe en el mensaje
+#   system (seguida de CLAUSULA_DECIR), gpt-4o-mini-tts en `instructions` y Gemini antepuesta al
+#   texto (ver _texto_gemini). Defaults: INSTRUCCIONES_FLUIDO (OpenAI) e INSTRUCCIONES_GEMINI.
 # Cada proveedor valida modelo y voz: si un valor es de otro proveedor (un .env viejo con
 # VOZ_MODELO=whisper-large-v3 o TTS_VOZ=Kore al pasar a OpenAI), usa su default y avisa una vez.
 #   Otro proveedor (deepgram, elevenlabs…): escribir _sintetizar_<nombre>(texto, modelo) → mp3
 #   y agregarlo a _TTS al final del archivo, con su variable de key y su modelo por defecto.
-# Cada llamada exitosa queda registrada con su costo en uso_api (ver precios.py).
+# Cada llamada queda registrada con su costo en uso_api (ver precios.py): gpt-audio con los
+# tokens reales de su usage (también si la guarda descarta el audio); los demás, estimado.
 
 import asyncio
 import base64
+import difflib
 import logging
 import os
 import re
+import unicodedata
 from decimal import Decimal
 
 import httpx
@@ -73,7 +82,7 @@ def _opcion(proveedor: str, variables: tuple[str, ...], default: str, valido) ->
 
 
 def _elegir(tabla: dict, variable: str) -> str | None:
-    """Proveedor forzado por `variable` (solo ese), o el primero de la tabla con key."""
+    """Proveedor forzado por `variable` (None si no tiene key), o el primero de la tabla con key."""
     forzado = os.getenv(variable, "").strip().lower()
     for nombre in ([forzado] if forzado else list(tabla)):
         if nombre in tabla and os.getenv(tabla[nombre][0]):
@@ -128,12 +137,24 @@ async def transcribir(audio: bytes, nombre_archivo: str = "audio.ogg") -> str | 
 
 # --- Respuesta en voz (texto → audio) ---
 
-INSTRUCCIONES_DEFAULT = (
+# Estilo con el que se generó la muestra Kore de Gemini (prueba de oído): no cambiar sin repetirla.
+INSTRUCCIONES_GEMINI = (
     "Habla en español de Colombia, con tono cálido, cercano y conversacional, a ritmo natural, "
     "como una persona amable que atiende por WhatsApp; nada de locutor ni de robot."
 )
+# FLUIDO de herramientas/prueba-voces/ajuste_sage.py: con él se generó la muestra O3 (gpt-audio-1.5).
+INSTRUCCIONES_FLUIDO = (
+    "Habla en español de Colombia, con tono cálido y cercano, como una persona amable que atiende por "
+    "WhatsApp. Habla de corrido y con soltura: une las frases sin pausas largas, no te detengas en las comas "
+    "ni entre oraciones, y mantén un ritmo conversacional ágil y continuo. Nada de locutor ni de robot."
+)
+# Cláusula fija tras las instrucciones (el DECIR de ronda_openai_audio.py): gpt-audio es un modelo
+# conversacional y sin ella responde al mensaje en vez de leerlo.
+CLAUSULA_DECIR = ("Tu única tarea es decir en voz alta, palabra por palabra, el mensaje del usuario, "
+                  "como si se lo estuvieras diciendo a un cliente por nota de voz. No agregues ni quites nada.")
 
 CARACTERES_POR_SEGUNDO = 15  # habla conversacional en español (~150 palabras por minuto)
+SIMILITUD_MINIMA = 0.9  # guarda de fidelidad de gpt-audio (difflib sobre palabras normalizadas)
 
 
 def tts_configurada() -> bool:
@@ -147,32 +168,106 @@ def texto_para_voz(texto: str) -> str:
     return re.sub(r"\s+", " ", texto).strip()
 
 
+def _palabras(texto: str) -> list[str]:
+    """Palabras normalizadas: minúsculas, sin tildes ni puntuación ni `$`, y los separadores de
+    miles unidos ($3.500 → 3500)."""
+    texto = unicodedata.normalize("NFKD", texto.lower())
+    texto = "".join(c for c in texto if not unicodedata.combining(c))
+    texto = re.sub(r"(?<=\d)[.,](?=\d{3}(?!\d))", "", texto)
+    return re.findall(r"\w+", texto)
+
+
+def es_fiel(pedido: str, dicho: str) -> bool:
+    """¿Lo que dijo gpt-audio (su transcript) es lo pedido? Los números (precios, placas, horas)
+    deben coincidir exactos y en orden; el resto, con similitud >= SIMILITUD_MINIMA.
+    ponytail: un número dicho en letras ("tres mil quinientos") no coincide con "3.500" y manda al
+    respaldo: más caro, nunca un precio equivocado."""
+    a, b = _palabras(pedido), _palabras(dicho)
+
+    def numeros(palabras):
+        return [p for p in palabras if any(c.isdigit() for c in p)]
+
+    return numeros(a) == numeros(b) and difflib.SequenceMatcher(None, a, b).ratio() >= SIMILITUD_MINIMA
+
+
+def _cadena_tts() -> list[str]:
+    """Proveedores a intentar en orden: el elegido y luego los respaldos que tengan key."""
+    primero = _elegir(_TTS, "TTS_PROVEEDOR")
+    if not primero:
+        return []
+    return [primero] + [p for p in _RESPALDOS if p != primero and os.getenv(_TTS[p][0])]
+
+
 async def sintetizar(texto: str) -> bytes | None:
-    """Convierte texto en audio MP3 con el proveedor elegido. None si no hay o si falla."""
+    """Convierte texto en audio MP3: el proveedor elegido y, si falla, los respaldos.
+    None si ninguno sirve. Nunca lanza: un fallo de voz no puede tumbar la respuesta de texto."""
     texto = texto[:2000]  # ponytail: tope duro, una nota de voz no debe durar minutos
-    proveedor = _elegir(_TTS, "TTS_PROVEEDOR")
-    if not proveedor:
+    for proveedor in _cadena_tts():
+        _, funcion, modelo_default, valido = _TTS[proveedor]
+        variables = ("OPENAI_AUDIO_MODELO", "TTS_MODELO") if proveedor == "openai-audio" else ("TTS_MODELO",)
+        modelo = _opcion(proveedor, variables, modelo_default, valido)
+        try:
+            audio = await funcion(texto, modelo)
+        except Exception as e:
+            logger.error(f"Error TTS {proveedor}: {e!r}")
+            audio = None
+        if audio:
+            if proveedor != "openai-audio":  # gpt-audio ya registró su costo exacto desde usage
+                # ponytail: duración ESTIMADA por caracteres; la exacta pediría decodificar el mp3
+                await precios.registrar("tts", proveedor, modelo, caracteres=len(texto),
+                                        segundos_audio=Decimal(len(texto)) / CARACTERES_POR_SEGUNDO)
+            return audio
+        logger.warning(f"TTS {proveedor} sin audio: pasa al siguiente respaldo, si hay")
+    return None
+
+
+def _voz_openai() -> str:
+    # OpenAI recomienda marin o cedar por calidad; marin es la voz de la muestra O3
+    return _opcion("openai", ("OPENAI_TTS_VOZ", "TTS_VOZ"), "marin", VOCES_OPENAI.__contains__)
+
+
+async def _sintetizar_openai_audio(texto: str, modelo: str) -> bytes | None:
+    """gpt-audio por Chat Completions con audio, exactamente como la muestra O3: system =
+    instrucciones + CLAUSULA_DECIR, user = el texto. Registra el costo con el usage real y descarta
+    el audio (None → respaldo) si el transcript no pasa la guarda es_fiel."""
+    instrucciones = os.getenv("TTS_INSTRUCCIONES", INSTRUCCIONES_FLUIDO).strip()
+    payload = {
+        "model": modelo,
+        "modalities": ["text", "audio"],
+        "audio": {"voice": _voz_openai(), "format": "mp3"},
+        "messages": [{"role": "system", "content": f"{instrucciones} {CLAUSULA_DECIR}".strip()},
+                     {"role": "user", "content": texto}],
+    }
+    async with httpx.AsyncClient(timeout=60) as client:
+        r = await client.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers={"Authorization": f"Bearer {os.getenv('OPENAI_API_KEY')}"},
+            json=payload,
+        )
+    if r.status_code != 200:
+        logger.error(f"Error TTS OpenAI gpt-audio: {r.status_code} — {r.text}")
         return None
-    _, funcion, modelo_default, valido = _TTS[proveedor]
-    modelo = _opcion(proveedor, ("TTS_MODELO",), modelo_default, valido)
-    audio = await funcion(texto, modelo)
-    if audio:
-        # ponytail: duración ESTIMADA por caracteres; la exacta pediría decodificar el mp3
-        await precios.registrar("tts", proveedor, modelo, caracteres=len(texto),
-                                segundos_audio=Decimal(len(texto)) / CARACTERES_POR_SEGUNDO)
-    return audio
+    datos = r.json()
+    # Antes de la guarda: un audio descartado también consumió tokens
+    await precios.registrar("tts", "openai-audio", modelo, usage=datos.get("usage") or {},
+                            caracteres=len(texto), segundos_audio=Decimal(len(texto)) / CARACTERES_POR_SEGUNDO)
+    audio = datos["choices"][0]["message"]["audio"]
+    dicho = audio.get("transcript", "")
+    if not es_fiel(texto, dicho):
+        logger.warning(f"gpt-audio cambió el texto, se descarta el audio. Pedido: {texto!r} — dijo: {dicho!r}")
+        return None
+    return base64.b64decode(audio["data"])
 
 
 async def _sintetizar_openai(texto: str, modelo: str) -> bytes | None:
     payload = {
         "model": modelo,
-        # OpenAI recomienda marin o cedar por calidad
-        "voice": _opcion("openai", ("OPENAI_TTS_VOZ", "TTS_VOZ"), "marin", VOCES_OPENAI.__contains__),
+        "voice": _voz_openai(),
         "input": texto,
         "response_format": "mp3",
     }
     if not modelo.startswith("tts-1"):  # tts-1 y tts-1-hd no aceptan instructions
-        payload["instructions"] = os.getenv("TTS_INSTRUCCIONES", INSTRUCCIONES_DEFAULT)
+        payload["instructions"] = os.getenv("TTS_INSTRUCCIONES", INSTRUCCIONES_FLUIDO)
     async with httpx.AsyncClient(timeout=60) as client:
         r = await client.post(
             "https://api.openai.com/v1/audio/speech",
@@ -192,7 +287,7 @@ def _texto_gemini(texto: str, modelo: str) -> str:
     OJO: Gemini 3.8 TTS trata el texto como transcripción literal y LEERÍA el estilo en voz alta
     (pide `speech_metadata.style`, y además devuelve WAV y no PCM); por eso el prefijo solo va a los
     modelos anteriores y 3.8 no es un cambio de TTS_MODELO sin adaptar el código y probar de oído."""
-    instrucciones = os.getenv("TTS_INSTRUCCIONES", INSTRUCCIONES_DEFAULT).strip()
+    instrucciones = os.getenv("TTS_INSTRUCCIONES", INSTRUCCIONES_GEMINI).strip()
     if instrucciones and modelo.startswith(("gemini-2.", "gemini-3.1-")):
         return f"{instrucciones}\n\n{texto}"
     return texto
@@ -242,11 +337,17 @@ async def _pcm_a_mp3(pcm: bytes) -> bytes | None:
 
 
 # proveedor → (variable de la key, función texto→mp3, modelo por defecto, ¿el modelo es suyo?).
-# El orden es la prioridad: Gemini (elegida por prueba de oído) y OpenAI de respaldo.
+# El orden es la prioridad sin TTS_PROVEEDOR: gpt-audio (muestra O3), luego los respaldos.
 # gemini-3.8-flash-tts existe y es la sucesora si el preview 2.5 se retira: no cambiar el default
 # sin prueba de oído (ver _texto_gemini).
 _TTS = {
+    "openai-audio": ("OPENAI_API_KEY", _sintetizar_openai_audio, "gpt-audio-1.5",
+                     lambda m: m.startswith("gpt-audio")),
+    "openai": ("OPENAI_API_KEY", _sintetizar_openai, "gpt-4o-mini-tts",
+               lambda m: m.startswith(("gpt-", "tts-")) and not m.startswith("gpt-audio")),
     "gemini": ("GEMINI_API_KEY", _sintetizar_gemini, "gemini-2.5-flash-preview-tts",
                lambda m: m.startswith("gemini-")),
-    "openai": ("OPENAI_API_KEY", _sintetizar_openai, "gpt-4o-mini-tts", lambda m: m.startswith(("gpt-", "tts-"))),
 }
+# Respaldos, en orden, si el primero falla o gpt-audio no pasa la guarda. gpt-audio no es respaldo
+# de nadie: si se fuerza otro proveedor es para no pagarlo.
+_RESPALDOS = ("openai", "gemini")

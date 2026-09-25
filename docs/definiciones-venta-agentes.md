@@ -15,19 +15,31 @@ Este documento manda sobre cualquier nota anterior; se cambia por decisión expl
   agente corre aislado en `<cliente>.agentes.ncchub.dev`.
 - Twilio no es opción de producción. Queda solo como sandbox de demo si Meta no está disponible.
 
-## 2. Voz: que suene humana ante todo (actualizado 2026-09-25, core v0.7.0)
+## 2. Voz: que suene humana ante todo (actualizado 2026-09-25, core v0.7.1)
 
 - Meta de AgentKit: el cliente nunca debe sentir que habla con un bot. En la voz manda que suene
   humana; el precio va después.
 - Entrada: `gpt-4o-mini-transcribe` (USD 0,003/min) por defecto cuando hay `OPENAI_API_KEY`.
   Groq solo como respaldo (`STT_PROVEEDOR=groq` o sin key de OpenAI).
-- Salida: **Gemini `gemini-2.5-flash-preview-tts`, voz `Kore`**, elegida en la prueba de oído del
-  2026-09-25 (a ciegas contra OpenAI marin/coral/cedar y Gemini Puck/Aoede). El estilo
-  (`TTS_INSTRUCCIONES`: español de Colombia, cálido, conversacional, nada de locutor ni robot) va
-  antepuesto al texto, como se generó la muestra. OpenAI `gpt-4o-mini-tts` (voz `marin`) queda de
-  respaldo si no hay `GEMINI_API_KEY`. Todo configurable sin tocar código (`TTS_PROVEEDOR`,
-  `TTS_VOZ`, `TTS_INSTRUCCIONES`); el core deja el punto de extensión para Deepgram/ElevenLabs.
-- **Advertencia:** la `GEMINI_API_KEY` debe ser de un proyecto con **facturación activa** (tier de
+- Salida: **OpenAI `gpt-audio-1.5`, voz `marin` (femenina)**, la muestra «O3» elegida por Nicolas
+  en la prueba de oído a ciegas del 2026-09-25 (sucede a Gemini `Kore`, elegida en la ronda
+  anterior del mismo día). Modelo conversacional por Chat Completions con audio, con el estilo
+  «fluido» (español de Colombia, cálido, de corrido, nada de locutor ni robot) y la orden de decir
+  el texto palabra por palabra. Regla: que se sienta humano en todo momento; calidad antes que precio.
+- **Costo: ~USD 0,08 por minuto de voz** (~USD 9 por cliente al mes a 500 respuestas en voz), ~5×
+  el TTS barato (USD 0,015/min). **Tenerlo en cuenta en la mensualidad** de los clientes que usen
+  voz. El costo real de cada respuesta queda en `uso_api` desde el `usage` de OpenAI.
+- **Guarda de fidelidad:** el modelo es conversacional y puede cambiar el texto; si lo que dijo no
+  coincide con lo pedido (números exactos, similitud ≥ 0,9), el audio se descarta y habla el
+  respaldo. Nunca sale un precio distinto al que escribió el agente.
+- **Respaldo automático:** `gpt-4o-mini-tts` (voz `marin`) y luego Gemini `Kore` si hay
+  `GEMINI_API_KEY`; si todo falla, la respuesta sale en texto. Todo configurable sin tocar código
+  (`TTS_PROVEEDOR`, `TTS_VOZ`, `TTS_INSTRUCCIONES`).
+- **Personaje femenino:** con la voz `marin`, el agente se presenta como mujer (nombre y forma de
+  hablar); la entrevista del core lo pide.
+- Cuando el cliente manda nota de voz, el agente escribe esa respuesta en frases de corrido con
+  pocas comas (así sonó la muestra).
+- **Advertencia:** si se usa el respaldo Gemini, la `GEMINI_API_KEY` debe ser de un proyecto con **facturación activa** (tier de
   pago). En el tier gratis Google puede usar los datos para entrenar, lo que choca con la Ley 1581
   frente al cliente (por eso Gemini gratis sigue descartado en la def. 3).
 - `gemini-3.8-flash-tts` es la sucesora si el preview se retira: lee el texto literal (pide el

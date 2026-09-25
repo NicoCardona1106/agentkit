@@ -97,22 +97,44 @@ corregir uno sin tocar código, crea `config/precios.json`, p. ej.
 `{"claude-haiku-4-5": {"salida": "5"}}`, o apunta `PRECIOS_ARCHIVO` a otro JSON;
 si el JSON está mal formado se registra el error en el log y se usa la tabla interna).
 
-**El costo de la voz de salida es estimado**, no exacto: la duración del audio
-se estima por caracteres (~15 por segundo). El precio de Gemini 2.5 Flash TTS
-sí está verificado (USD 10 por millón de tokens de audio, 25 tokens/s ≈ USD
-0,015/min); el de `gpt-4o-mini-tts` (respaldo, USD 0,015/min) no — OpenAI hoy
-lo publica solo por tokens de audio.
+**La voz de salida por defecto (`gpt-audio-1.5`) se cobra exacta:** cada
+respuesta trae su `usage` (tokens de texto de entrada, texto y audio de salida)
+y se registra con los precios verificados el 2026-09-25 (texto USD 2,50/10,00
+por millón, audio USD 32/64 por millón). Si la guarda de fidelidad descarta el
+audio, esa llamada también queda registrada, además de la del respaldo.
+**El costo de los respaldos es estimado**: la duración del audio se estima por
+caracteres (~15 por segundo). El precio de Gemini 2.5 Flash TTS sí está
+verificado (USD 10 por millón de tokens de audio, 25 tokens/s ≈ USD 0,015/min);
+el de `gpt-4o-mini-tts` (USD 0,015/min) no — OpenAI hoy lo publica solo por
+tokens de audio.
 El de Claude sí sale del `usage` real, y el de la transcripción de la duración
 real de la nota de voz (OGG de WhatsApp; otros formatos se estiman por tamaño).
 
 ## Voz del agente (sin tocar código)
 
-Decisión tras la prueba de oído (2026-09-25): el agente **escucha** con OpenAI
-`gpt-4o-mini-transcribe` y **habla** con Gemini `gemini-2.5-flash-preview-tts`,
-voz `Kore`. OpenAI `gpt-4o-mini-tts` (voz `marin`) queda de respaldo si no hay
-`GEMINI_API_KEY`.
+Decisión de Nicolas tras la prueba de oído a ciegas (2026-09-25, muestra «O3»):
+el agente **escucha** con OpenAI `gpt-4o-mini-transcribe` y **habla** con el
+modelo conversacional `gpt-audio-1.5`, voz `marin` (femenina), por Chat
+Completions con audio. Fue la voz más humana de la prueba; la regla es que se
+sienta humano en todo momento, calidad antes que precio.
 
-> **Advertencia (Ley 1581):** usa una `GEMINI_API_KEY` de un proyecto con
+- **Costo:** ~USD 0,08 por minuto de voz (~USD 9 por cliente al mes a 500
+  respuestas en voz). Es ~5 veces el TTS barato: tenerlo en cuenta al cotizar.
+- **Guarda de fidelidad:** `gpt-audio` es conversacional y puede cambiar el
+  texto (en la prueba, la variante mini se inventó respuestas). El core compara
+  lo que dijo (su transcript) con lo que debía decir, sin mirar puntuación,
+  tildes, `$` ni puntos de miles. Si un número (precio, placa, hora) no coincide
+  o el texto cambia (similitud < 0,9), descarta ese audio y usa el respaldo.
+- **Respaldo automático:** si `gpt-audio` falla o no pasa la guarda, habla
+  `gpt-4o-mini-tts` (voz `marin`, misma `OPENAI_API_KEY`) y, si también falla,
+  Gemini `gemini-2.5-flash-preview-tts` voz `Kore` (si hay `GEMINI_API_KEY`).
+  Si todo falla, la respuesta sale en texto.
+- **Voz femenina:** el personaje del agente debe ser femenino (nombre y forma
+  de hablar), para que la voz y el texto no se contradigan.
+- **Texto fluido:** cuando el cliente manda nota de voz, el cerebro recibe una
+  instrucción extra para ese turno: escribir de corrido, con pocas comas.
+
+> **Advertencia (Ley 1581):** si usas el respaldo Gemini, usa una `GEMINI_API_KEY` de un proyecto con
 > **facturación activa** (tier de pago). En el tier gratis Google puede usar los
 > datos para entrenar sus modelos, y eso choca con el tratamiento de datos que
 > AgentKit promete al cliente.
@@ -121,13 +143,14 @@ Todo se cambia en el `.env` y se aplica al reiniciar el agente:
 
 | Variable | Default | Para qué |
 |----------|---------|----------|
-| `GEMINI_API_KEY` | — | Voz de salida (Gemini, requiere `ffmpeg` instalado para pasar a mp3). Key con facturación activa |
-| `OPENAI_API_KEY` | — | Entiende notas de voz (`gpt-4o-mini-transcribe`) y es el respaldo de la voz de salida (`gpt-4o-mini-tts`, mp3) |
-| `TTS_PROVEEDOR` | `gemini` | `openai` para forzar el respaldo |
-| `TTS_VOZ` | `Kore` (Gemini) / `marin` (OpenAI) | Voz de salida. Gemini: `Kore`, `Puck`, `Zephyr`, `Aoede`… (30 voces). OpenAI: `alloy`, `ash`, `ballad`, `coral`, `echo`, `fable`, `onyx`, `nova`, `sage`, `shimmer`, `verse`, `marin`, `cedar` |
-| `GEMINI_TTS_VOZ` / `OPENAI_TTS_VOZ` | — | Voz solo para ese proveedor; gana sobre `TTS_VOZ` (útil para dejar lista la voz del respaldo) |
-| `TTS_INSTRUCCIONES` | español de Colombia, cálido y conversacional, ritmo natural, nada de locutor ni robot | Cómo habla: tono, acento, ritmo. Texto libre, p. ej. `TTS_INSTRUCCIONES="Habla como una recepcionista paisa, alegre y sin afanes"`. OpenAI la recibe en su campo `instructions`; Gemini no tiene ese campo y la recibe **antepuesta al texto**: `instrucciones`, una línea en blanco y el texto (así se generó la muestra elegida, sin que el modelo la leyera en voz alta) |
-| `TTS_MODELO` | `gemini-2.5-flash-preview-tts` (Gemini) / `gpt-4o-mini-tts` (OpenAI) | Modelo de voz de salida. `gemini-3.8-flash-tts` es el sucesor si el preview se retira, pero lee el texto literal (leería las instrucciones) y devuelve WAV: no cambiarlo sin adaptar el core y repetir la prueba de oído |
+| `OPENAI_API_KEY` | — | Entiende notas de voz (`gpt-4o-mini-transcribe`) y habla (`gpt-audio-1.5` y su respaldo `gpt-4o-mini-tts`) |
+| `GEMINI_API_KEY` | — | Último respaldo de la voz de salida (Gemini, requiere `ffmpeg` instalado para pasar a mp3). Key con facturación activa |
+| `TTS_PROVEEDOR` | `openai-audio` | Proveedor principal: `openai-audio` (`gpt-audio-1.5`), `openai` (`gpt-4o-mini-tts`) o `gemini`. Si falla, siguen los respaldos `openai` y `gemini` que tengan key (`gpt-audio` nunca es respaldo: forzar otro sirve para no pagarlo) |
+| `OPENAI_AUDIO_MODELO` | `gpt-audio-1.5` | Modelo conversacional de voz; solo acepta `gpt-audio*` (gana sobre `TTS_MODELO`) |
+| `TTS_VOZ` | `marin` (OpenAI) / `Kore` (Gemini) | Voz de salida. Gemini: `Kore`, `Puck`, `Zephyr`, `Aoede`… (30 voces). OpenAI: `alloy`, `ash`, `ballad`, `coral`, `echo`, `fable`, `onyx`, `nova`, `sage`, `shimmer`, `verse`, `marin`, `cedar` |
+| `GEMINI_TTS_VOZ` / `OPENAI_TTS_VOZ` | — | Voz solo para ese proveedor (`OPENAI_TTS_VOZ` vale para `gpt-audio` y `gpt-4o-mini-tts`); gana sobre `TTS_VOZ` |
+| `TTS_INSTRUCCIONES` | OpenAI: el estilo «fluido» de la muestra O3 (español de Colombia, cálido y cercano, de corrido, sin pausas largas, nada de locutor ni robot). Gemini: el estilo de su muestra Kore | Cómo habla: tono, acento, ritmo. Texto libre, p. ej. `TTS_INSTRUCCIONES="Habla como una recepcionista paisa, alegre y sin afanes"`. `gpt-audio` la recibe en el mensaje system seguida de una cláusula fija («di palabra por palabra el mensaje del usuario, no agregues ni quites nada»); `gpt-4o-mini-tts` en su campo `instructions`; Gemini no tiene ese campo y la recibe **antepuesta al texto**: `instrucciones`, una línea en blanco y el texto |
+| `TTS_MODELO` | `gpt-audio-1.5` / `gpt-4o-mini-tts` / `gemini-2.5-flash-preview-tts` | Modelo de voz de salida; cada proveedor ignora el que no es suyo. `gemini-3.8-flash-tts` es el sucesor si el preview se retira, pero lee el texto literal (leería las instrucciones) y devuelve WAV: no cambiarlo sin adaptar el core y repetir la prueba de oído |
 | `STT_PROVEEDOR` | `openai` | `groq` para transcribir gratis con `GROQ_API_KEY` |
 | `VOZ_MODELO` | `gpt-4o-mini-transcribe` (OpenAI) / `whisper-large-v3` (Groq) | Modelo de transcripción |
 
@@ -140,6 +163,17 @@ responde por texto; si manda nota de voz, responde con nota de voz.
   default y lo avisa una vez en el log.
 - Forzar un proveedor (`TTS_PROVEEDOR` / `STT_PROVEEDOR`) sin su key deja al
   agente **sin esa voz**: no cae al otro proveedor.
+
+### Actualizar un agente a v0.7.1
+
+La voz de salida pasa a `gpt-audio-1.5` voz `marin` con solo tener
+`OPENAI_API_KEY`; Gemini queda de último respaldo. En el `.env` del agente:
+
+- **Borrar** `TTS_PROVEEDOR=gemini`, `TTS_VOZ=Kore` y `TTS_MODELO=...` si
+  están (el `Kore` se puede dejar en `GEMINI_TTS_VOZ`) y `TTS_INSTRUCCIONES`
+  salvo que sea un estilo propio del negocio.
+- Revisar que el personaje del agente (`config/prompts.yaml`) sea **femenino**.
+- Recalcular la mensualidad con ~USD 0,08 por minuto de voz.
 
 ### Actualizar un agente a v0.7.0
 
@@ -164,7 +198,7 @@ salida a Gemini `Kore`. En el `.env` del agente:
 | IA | Anthropic Claude (`claude-haiku-4-5` por defecto, con tool use; `CLAUDE_MODEL` para cambiarlo) |
 | Canales | WhatsApp (Meta Cloud API / Twilio) e Instagram DM |
 | Base de datos | SQLite (local) / PostgreSQL (producción) |
-| Voz | Escucha: OpenAI `gpt-4o-mini-transcribe`. Habla: Gemini `gemini-2.5-flash-preview-tts` voz `Kore` (OpenAI de respaldo). Opcional |
+| Voz | Escucha: OpenAI `gpt-4o-mini-transcribe`. Habla: OpenAI `gpt-audio-1.5` voz `marin` (respaldos `gpt-4o-mini-tts` y Gemini `Kore`). Opcional |
 | Pagos | Wompi / MercadoPago / Stripe (opcional, según país) |
 | Deploy | Docker + Railway |
 

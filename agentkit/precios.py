@@ -55,6 +55,9 @@ PRECIOS: dict[str, dict[str, str]] = {
     # 2027-01-01), a 25 tokens por segundo de audio.
     "gemini-2.5-flash-preview-tts": {"minuto": "0.015"},
     "gemini-3.8-flash-tts": {"minuto": "0.0135"},
+    # TTS por Chat Completions con audio (voz O3): USD por millón de tokens, verificado el 2026-09-25
+    # en https://developers.openai.com/api/docs/pricing. Se cobra con el usage real (costo_tokens_audio).
+    "gpt-audio-1.5": {"entrada": "2.50", "salida": "10", "audio_entrada": "32", "audio_salida": "64"},
 }
 
 
@@ -116,6 +119,16 @@ def costo_llm(modelo: str, tokens_entrada: int = 0, tokens_salida: int = 0,
             + tokens_cache_escritura * _d(p["cache_escritura"])) / MILLON
 
 
+def costo_tokens_audio(modelo: str, texto_entrada: int = 0, audio_entrada: int = 0,
+                       texto_salida: int = 0, audio_salida: int = 0) -> Decimal:
+    """Modelos de chat con audio (gpt-audio): texto y audio se cobran aparte, por millón de tokens."""
+    p = _precio(modelo)
+    if not p:
+        return Decimal(0)
+    return (texto_entrada * _d(p["entrada"]) + audio_entrada * _d(p["audio_entrada"])
+            + texto_salida * _d(p["salida"]) + audio_salida * _d(p["audio_salida"])) / MILLON
+
+
 def costo_audio(modelo: str, segundos: Decimal) -> Decimal:
     p = _precio(modelo)
     if not p:
@@ -129,6 +142,7 @@ async def registrar(tipo: str, proveedor: str, modelo: str, *, usage=None,
                     segundos_audio: Decimal | None = None, caracteres: int = 0):
     """Guarda en uso_api una fila con el costo de una llamada (tipo: llm | stt | tts).
     llm: `usage` es el objeto usage de Anthropic. stt/tts: segundos de audio (y caracteres en tts).
+    tts con `usage` (dict de OpenAI Chat Completions con audio): costo exacto por tokens.
     NUNCA lanza: un fallo aquí se loguea y la respuesta al cliente sigue su curso."""
     try:
         fila = {"tipo": tipo, "proveedor": proveedor, "modelo": modelo, "caracteres": caracteres}
@@ -141,6 +155,14 @@ async def registrar(tipo: str, proveedor: str, modelo: str, *, usage=None,
             }
             fila.update(tokens)
             usd = costo_llm(modelo, **tokens)
+        elif usage is not None:
+            # ponytail: cached_tokens se cobra como texto normal; el prompt de voz (~150 tokens)
+            # no llega al mínimo de caché de OpenAI
+            entrada, salida = usage.get("prompt_tokens") or 0, usage.get("completion_tokens") or 0
+            audio_in = (usage.get("prompt_tokens_details") or {}).get("audio_tokens") or 0
+            audio_out = (usage.get("completion_tokens_details") or {}).get("audio_tokens") or 0
+            fila.update(tokens_entrada=entrada, tokens_salida=salida, segundos_audio=float(segundos_audio or 0))
+            usd = costo_tokens_audio(modelo, entrada - audio_in, audio_in, salida - audio_out, audio_out)
         else:
             fila["segundos_audio"] = float(segundos_audio or 0)  # medida, no dinero
             usd = costo_audio(modelo, segundos_audio or 0)
