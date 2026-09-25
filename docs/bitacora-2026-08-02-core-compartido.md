@@ -97,6 +97,40 @@ agentes con `pip install --upgrade`.
   errores; `costo_usd.modelos_sin_precio` y `costo_usd: null` si el cálculo falla.
 - Pruebas: `pytest -q` → 18 pruebas sin red ni APIs reales (y `python tests/test_core.py` corre además los self-checks async).
 
+## v0.7.1 (2026-09-25) — Voz O3: gpt-audio-1.5 con guarda de fidelidad
+
+- **Voz de salida:** decisión de Nicolas en la prueba de oído a ciegas: la muestra «O3», modelo
+  conversacional `gpt-audio-1.5` voz `marin` (femenina) por Chat Completions con audio, generada
+  igual que en `herramientas/prueba-voces/ronda_openai_audio.py` (system = estilo `FLUIDO` + «di
+  palabra por palabra…», user = el texto). Proveedor nuevo `openai-audio`, default con solo
+  `OPENAI_API_KEY`; modelo validado (`gpt-audio*`, `OPENAI_AUDIO_MODELO` o `TTS_MODELO`).
+- **Guarda de fidelidad:** el transcript del audio se compara con el texto pedido (minúsculas, sin
+  tildes, puntuación, `$` ni puntos de miles); si un número difiere o la similitud (difflib) es
+  < 0,9, el audio se descarta con un warning y habla el respaldo.
+- **Respaldo automático:** `openai-audio` → `openai` (`gpt-4o-mini-tts`, `marin`, estilo FLUIDO) →
+  `gemini` (`Kore`) si hay key. `TTS_PROVEEDOR` elige el primero; `gpt-audio` nunca es respaldo.
+  `sintetizar` nunca lanza y `main.py` envía el texto si la voz falla en cualquier punto (antes una
+  excepción del TTS se llevaba también la respuesta de texto).
+- **Costo exacto:** `gpt-audio-1.5` se registra en `uso_api` con los tokens reales del `usage`
+  (texto USD 2,50/10,00 y audio 32/64 por millón, verificados hoy); la llamada descartada por la
+  guarda también queda registrada. ~USD 0,08 por minuto de voz, ~5× el TTS barato.
+- **Texto fluido para voz:** si la respuesta saldrá como nota de voz, `brain.generar_respuesta(...,
+  en_voz=True)` agrega una instrucción («frases de corrido, con pocas comas») al bloque variable
+  del system; el bloque cacheado no cambia.
+- La voz es femenina: la entrevista (CLAUDE.md, preguntas 4 y 13) pide un personaje femenino.
+- Pruebas: `pytest -q` → 21 (payload de la muestra O3, guarda, costo desde usage, cadena de
+  respaldo, texto aunque todo el TTS falle, instrucción de voz solo en turnos de voz).
+- Revisión:
+  - Timeouts: `gpt-audio` con lectura de 10 s + 1 s por cada 40 caracteres (tope 45 s) y
+    conexión 5 s; los respaldos, 30 s y 5 s; y `VOZ_TIMEOUT_TOTAL` (45 s) en `main.py` para toda
+    la cadena: si vence, sale el texto (antes la espera encadenada podía llegar a ~180 s).
+  - Guarda: además de los números, las palabras críticas (no, sí, nunca, ni, sin, tampoco,
+    jamás, hoy, mañana, ayer, días de la semana) deben coincidir exactas y en orden; umbral 0,95
+    desde 20 palabras; se unifican `a. m.`/`p. m.` y los miles `30.000`/`30,000`/`30 000`. La
+    guarda compara la transcripción que devuelve el modelo, no un reconocimiento del mp3.
+  - `VOCES_GPT_AUDIO` = las mismas voces de `gpt-4o-mini-tts` (verificado con llamadas reales el 2026-09-25).
+  - En `MODO_BORRADOR` no se responde en voz ni se pide texto de voz.
+
 ## Pendientes conocidos
 
 - Verificar el shape exacto de los APIs de pago (Wompi payment_links,
@@ -107,3 +141,10 @@ agentes con `pip install --upgrade`.
 - Typing indicator real (Meta lo soporta; hoy la pausa es solo un `sleep`).
 - Seguimiento proactivo (plantillas de Meta) — requiere número propio, fuera del
   sandbox de Twilio.
+- Voz O3: medir con la API real cuántos audios descarta la guarda (sobre todo si `gpt-audio`
+  escribe los números en letras en su transcript: hoy eso manda al respaldo) y el costo real por
+  minuto en `uso_api`.
+- Voz O3: una llamada a `gpt-audio` que vence por timeout (o que corta `VOZ_TIMEOUT_TOTAL`) puede
+  haberse cobrado en OpenAI sin dejar fila en `uso_api` (no llegó el `usage`). Si pasa seguido, el
+  costo real quedará por encima del registrado.
+- ~~Voz O3: confirmar `VOCES_GPT_AUDIO`~~ HECHO 2026-09-25 (llamadas reales: todas las voces de OpenAI sirven).

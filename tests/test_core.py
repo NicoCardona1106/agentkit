@@ -131,15 +131,18 @@ def test_tts():
     os.environ.pop("TTS_PROVEEDOR", None)
     os.environ["OPENAI_API_KEY"] = "sk-test"
     os.environ["GEMINI_API_KEY"] = "AIza-test"
-    assert voz._elegir(voz._TTS, "TTS_PROVEEDOR") == "gemini"  # default con ambas keys (prueba de oído)
+    assert voz._elegir(voz._TTS, "TTS_PROVEEDOR") == "openai-audio"  # default: voz O3 (prueba de oído)
+    assert voz._cadena_tts() == ["openai-audio", "openai", "gemini"]  # y sus respaldos
     os.environ["TTS_PROVEEDOR"] = "openai"
     assert voz._elegir(voz._TTS, "TTS_PROVEEDOR") == "openai"
+    assert voz._cadena_tts() == ["openai", "gemini"]  # gpt-audio nunca es respaldo
     os.environ.pop("TTS_PROVEEDOR")
     os.environ.pop("GEMINI_API_KEY")
-    assert voz._elegir(voz._TTS, "TTS_PROVEEDOR") == "openai"  # respaldo sin key de Gemini
+    assert voz._cadena_tts() == ["openai-audio", "openai"]  # sin key de Gemini
     os.environ["GEMINI_API_KEY"] = "AIza-test"
     os.environ["TTS_PROVEEDOR"] = "gemini"
     assert voz._elegir(voz._TTS, "TTS_PROVEEDOR") == "gemini"
+    assert voz._cadena_tts() == ["gemini", "openai"]
     os.environ["TTS_PROVEEDOR"] = "elevenlabs"  # aún no implementado: sin voz, no otro proveedor
     assert not voz.tts_configurada()
     os.environ["TTS_PROVEEDOR"] = "gemini"
@@ -430,6 +433,7 @@ def test_voz_valores_de_otro_proveedor():
         os.environ.pop(var, None)
     os.environ.update(viejas)
     os.environ["OPENAI_API_KEY"] = "sk-test"
+    os.environ["TTS_PROVEEDOR"] = "openai"
 
     enviados = []
 
@@ -471,6 +475,7 @@ def test_voz_valores_de_otro_proveedor():
 
         # Respaldo Gemini con el .env de OpenAI (TTS_VOZ=marin, TTS_MODELO=gpt-4o-mini-tts)
         os.environ.pop("OPENAI_API_KEY")
+        os.environ.pop("TTS_PROVEEDOR")
         os.environ.update({"GEMINI_API_KEY": "AIza-test", "TTS_VOZ": "marin", "TTS_MODELO": "gpt-4o-mini-tts"})
         assert asyncio.run(voz.sintetizar("hola")) == b"mp3-gemini"
         assert "gemini-2.5-flash-preview-tts" in str(enviados[-1].url)
@@ -478,7 +483,7 @@ def test_voz_valores_de_otro_proveedor():
         voz_gemini = cuerpo["generationConfig"]["speechConfig"]
         assert voz_gemini["voiceConfig"]["prebuiltVoiceConfig"]["voiceName"] == "Kore"
         # Gemini no tiene campo instructions: el estilo va antepuesto, como en la prueba de oído
-        assert cuerpo["contents"][0]["parts"][0]["text"] == f"{voz.INSTRUCCIONES_DEFAULT}\n\nhola"
+        assert cuerpo["contents"][0]["parts"][0]["text"] == f"{voz.INSTRUCCIONES_GEMINI}\n\nhola"
         os.environ["TTS_INSTRUCCIONES"] = "Habla como paisa"
         asyncio.run(voz.sintetizar("hola"))
         assert json.loads(enviados[-1].content)["contents"][0]["parts"][0]["text"] == "Habla como paisa\n\nhola"
@@ -631,6 +636,7 @@ def test_tts_openai_payload_y_costo():
         for var in ("TTS_PROVEEDOR", "TTS_MODELO", "TTS_VOZ", "TTS_INSTRUCCIONES", "GEMINI_API_KEY"):
             os.environ.pop(var, None)
         os.environ["OPENAI_API_KEY"] = "sk-test"
+        os.environ["TTS_PROVEEDOR"] = "openai"
         try:
             memory.registrar_uso = capturar
             assert await voz.sintetizar("Hola, claro que sí") == b"ID3-mp3-falso"
@@ -646,7 +652,7 @@ def test_tts_openai_payload_y_costo():
             assert json.loads(enviados[-1].content)["instructions"] == "Habla como paisa"
         finally:
             httpx.AsyncClient, memory.registrar_uso = cliente_real, registrar_real
-            for var in ("OPENAI_API_KEY", "TTS_INSTRUCCIONES"):
+            for var in ("OPENAI_API_KEY", "TTS_INSTRUCCIONES", "TTS_PROVEEDOR"):
                 os.environ.pop(var, None)
 
     asyncio.run(correr())
@@ -709,6 +715,236 @@ def test_estado_costo():
     assert diff("desglose", "tts") == Decimal("0.0003")
 
 
+# Mensaje system con el que se generó la muestra O3 (DECIR de herramientas/prueba-voces/ronda_openai_audio.py),
+# copiado literal: si alguien toca las constantes de voz.py, esta prueba lo avisa.
+DECIR_MUESTRA_O3 = (
+    "Habla en español de Colombia, con tono cálido y cercano, como una persona amable que atiende por "
+    "WhatsApp. Habla de corrido y con soltura: une las frases sin pausas largas, no te detengas en las comas "
+    "ni entre oraciones, y mantén un ritmo conversacional ágil y continuo. Nada de locutor ni de robot."
+    " Tu única tarea es decir en voz alta, palabra por palabra, el mensaje del usuario, "
+    "como si se lo estuvieras diciendo a un cliente por nota de voz. No agregues ni quites nada.")
+
+_USAGE_GPT_AUDIO = {"prompt_tokens": 120, "completion_tokens": 900,
+                    "prompt_tokens_details": {"audio_tokens": 0, "cached_tokens": 0},
+                    "completion_tokens_details": {"audio_tokens": 850}}
+
+
+def test_es_fiel():
+    """Guarda de fidelidad: la puntuación, tildes, `$` y puntos de miles no importan; un número
+    distinto o un texto inventado no pasan."""
+    from agentkit import voz
+
+    pedido = "¡Claro que sí! La hora de carro está en $3.500 y el día completo en $20.000."
+    assert voz.es_fiel(pedido, "Claro que si, la hora de carro esta en 3500 y el dia completo en 20000")
+    assert not voz.es_fiel(pedido, "¡Claro que sí! La hora de carro está en $3.000 y el día completo en $20.000.")
+    assert not voz.es_fiel(pedido, "Hola, ¿en qué te puedo ayudar hoy?")
+    assert not voz.es_fiel("Tu placa es ABC123 y sales a las 5:30", "Tu placa es ABC124 y sales a las 5:30")
+    assert not voz.es_fiel("Te espero a las 5:30", "Te espero a las 5 y 30 de la tarde")
+    assert not voz.es_fiel(pedido, "")
+
+    # Palabras críticas (revisión): la negación o el día cambiados no pasan aunque la similitud sea alta
+    assert not voz.es_fiel("Uy qué pena, no tenemos cupo para hoy", "Uy qué pena, tenemos cupo para hoy")
+    assert not voz.es_fiel("El parqueadero no está abierto a esa hora", "El parqueadero está abierto a esa hora")
+    assert not voz.es_fiel("Te esperamos el lunes a las 8", "Te esperamos el martes a las 8")
+    assert voz.es_fiel("Sí, claro que sí", "Si claro que si")
+    # Límite conocido: un sustantivo cambiado en un texto largo (≥ 20 palabras, umbral 0,95) pasa
+    largo = ("Claro que te ayudo con eso, la mensualidad para el carro incluye el lavado básico cada "
+             "quince días y el parqueo cubierto en el segundo piso del edificio principal")
+    assert voz.es_fiel(largo, largo.replace("carro", "moto"))
+
+    # Normalización (revisión): a. m. / p. m. y separadores de miles
+    assert voz._palabras("a las 5 p. m.") == voz._palabras("a las 5pm") == voz._palabras("a las 5 PM")
+    assert voz._palabras("abre a.m.") == voz._palabras("abre am")
+    for escrito in ("$30.000", "30,000", "30 000", "30\u00a0000"):
+        assert voz._palabras(escrito) == ["30000"], escrito
+    assert voz.es_fiel("Abrimos a las 6 a. m. y la hora vale $30.000", "Abrimos a las 6am y la hora vale 30 000")
+
+
+def test_tts_gpt_audio_payload_guarda_y_costo():
+    """Default openai-audio: payload de Chat Completions como la muestra O3, costo desde usage y
+    caída al respaldo (gpt-4o-mini-tts) si el transcript no pasa la guarda, registrando las dos
+    llamadas. Si todo el TTS falla, sintetizar devuelve None sin lanzar. Sin red."""
+    import json
+    import logging
+    from decimal import Decimal
+
+    import httpx
+
+    from agentkit import memory, precios, voz
+
+    texto = "Claro que sí. La hora de carro está en $3.500 y si te quedas todo el día te sale en $20.000."
+    dicho = [texto]
+    estado = {"http": 200}
+    enviados = []
+
+    def responder(request):
+        enviados.append(request)
+        if estado["http"] is None:
+            raise httpx.ConnectError("sin red")
+        if estado["http"] != 200:
+            return httpx.Response(estado["http"], text="caído")
+        if "chat/completions" in str(request.url):
+            audio = {"data": base64.b64encode(b"mp3-o3").decode(), "transcript": dicho[0]}
+            return httpx.Response(200, json={"choices": [{"message": {"audio": audio}}],
+                                             "usage": _USAGE_GPT_AUDIO})
+        return httpx.Response(200, content=b"mp3-respaldo")
+
+    filas = []
+
+    async def capturar(**campos):
+        filas.append(campos)
+
+    todas = ("OPENAI_API_KEY", "GEMINI_API_KEY", "TTS_PROVEEDOR", "TTS_MODELO", "OPENAI_AUDIO_MODELO",
+             "TTS_VOZ", "OPENAI_TTS_VOZ", "TTS_INSTRUCCIONES")
+    for var in todas:
+        os.environ.pop(var, None)
+    os.environ["OPENAI_API_KEY"] = "sk-test"
+    cliente_real, registrar_real = httpx.AsyncClient, memory.registrar_uso
+    httpx.AsyncClient = lambda **kw: cliente_real(transport=httpx.MockTransport(responder), **kw)
+    memory.registrar_uso = capturar
+    try:
+        # 1) Fiel (distinta puntuación): sale el audio de gpt-audio y una fila con el costo exacto
+        dicho[0] = "Claro que sí, la hora de carro está en 3.500 y si te quedas todo el día te sale en 20.000"
+        assert asyncio.run(voz.sintetizar(texto)) == b"mp3-o3"
+        assert str(enviados[-1].url) == "https://api.openai.com/v1/chat/completions"
+        cuerpo = json.loads(enviados[-1].content)
+        assert cuerpo == {"model": "gpt-audio-1.5", "modalities": ["text", "audio"],
+                          "audio": {"voice": "marin", "format": "mp3"},
+                          "messages": [{"role": "system", "content": DECIR_MUESTRA_O3},
+                                       {"role": "user", "content": texto}]}, cuerpo
+        (fila,) = filas
+        assert fila["tipo"] == "tts" and fila["proveedor"] == "openai-audio" and fila["modelo"] == "gpt-audio-1.5"
+        assert fila["tokens_entrada"] == 120 and fila["tokens_salida"] == 900
+        # 120 texto in x 2.50 + 50 texto out x 10 + 850 audio out x 64 (USD por millón)
+        assert fila["usd"] == "0.0552000000", fila["usd"]
+        assert precios.costo_tokens_audio("gpt-audio-1.5", 120, 0, 50, 850) == Decimal("0.0552")
+
+        # 2) Número cambiado y 3) texto inventado: se descarta, sale el respaldo y quedan 2 filas
+        for malo in ("Claro que sí, la hora de carro está en $3.000 y si te quedas todo el día te sale en $20.000",
+                     "¡Hola! Qué más, bienvenido. ¿En qué te puedo ayudar hoy?"):
+            filas.clear()
+            dicho[0] = malo
+            with _Captura(logging.WARNING) as avisos:
+                assert asyncio.run(voz.sintetizar(texto)) == b"mp3-respaldo"
+            assert any("cambió el texto" in a for a in avisos), avisos
+            assert "audio/speech" in str(enviados[-1].url)
+            respaldo = json.loads(enviados[-1].content)
+            assert respaldo["model"] == "gpt-4o-mini-tts" and respaldo["voice"] == "marin"
+            assert respaldo["instructions"] == voz.INSTRUCCIONES_FLUIDO
+            assert [f["proveedor"] for f in filas] == ["openai-audio", "openai"]
+            assert filas[0]["usd"] == "0.0552000000"  # la llamada descartada también se cobra
+
+        # Voz que no es de OpenAI (p. ej. una de Gemini): gpt-audio usa marin
+        os.environ["OPENAI_TTS_VOZ"] = "Kore"
+        dicho[0] = texto
+        assert asyncio.run(voz.sintetizar(texto)) == b"mp3-o3"
+        assert json.loads(enviados[-1].content)["audio"]["voice"] == "marin"
+        os.environ.pop("OPENAI_TTS_VOZ")
+
+        # Modelo validado: uno que no es gpt-audio se ignora (default + aviso)
+        os.environ["TTS_MODELO"] = "gpt-4o-mini-tts"
+        dicho[0] = texto
+        assert asyncio.run(voz.sintetizar(texto)) == b"mp3-o3"
+        assert json.loads(enviados[-1].content)["model"] == "gpt-audio-1.5"
+        os.environ.pop("TTS_MODELO")
+
+        # 4) Todo el TTS caído (HTTP 500 y sin red), con Gemini de último respaldo: None, sin lanzar
+        os.environ["GEMINI_API_KEY"] = "AIza-test"
+        assert voz._cadena_tts() == ["openai-audio", "openai", "gemini"]
+        for falla in (500, None):
+            estado["http"] = falla
+            n = len(enviados)
+            assert asyncio.run(voz.sintetizar(texto)) is None
+            assert len(enviados) - n == 3  # probó los tres
+    finally:
+        httpx.AsyncClient, memory.registrar_uso = cliente_real, registrar_real
+        for var in todas:
+            os.environ.pop(var, None)
+
+
+async def _test_voz_fluida_solo_en_turnos_de_voz():
+    """La instrucción de voz fluida va solo en turnos de voz y fuera del bloque cacheado; si el
+    cliente habla y todo el TTS falla, la respuesta sale en texto igual."""
+    import secrets as secrets_mod
+
+    import httpx
+
+    from agentkit import brain, memory, voz
+    from agentkit.providers import MensajeEntrante
+    import agentkit.main as main_mod
+
+    await memory.inicializar_db()
+    tel = f"test-voz-{secrets_mod.token_hex(4)}"
+    texto_sin, texto_con = await brain._system_prompt(tel), await brain._system_prompt(tel, en_voz=True)
+    assert texto_sin[0] == texto_con[0]  # bloque cacheado idéntico
+    assert brain.INSTRUCCION_VOZ in texto_con[1]["text"] and brain.INSTRUCCION_VOZ not in texto_sin[1]["text"]
+
+    llamadas, textos, audios = [], [], []
+
+    async def generar(telefono, mensaje, historial, proveedor, en_voz=False):
+        llamadas.append(en_voz)
+        return "Claro que sí, la hora está en $3.500"
+
+    async def transcribir(audio, nombre_archivo="audio.ogg"):
+        return "cuánto vale la hora"
+
+    class FakeProv:
+        async def descargar_audio(self, ref):
+            return b"OggS"
+
+        async def enviar_mensaje(self, tel, texto):
+            textos.append(texto)
+            return True
+
+        async def enviar_audio_url(self, tel, url):
+            audios.append(url)
+            return True
+
+    def sin_red(request):
+        raise httpx.ConnectError("sin red")
+
+    reales = (brain.generar_respuesta, voz.transcribir, main_mod.proveedor, httpx.AsyncClient)
+    cliente_real = httpx.AsyncClient
+    brain.generar_respuesta, voz.transcribir, main_mod.proveedor = generar, transcribir, FakeProv()
+    httpx.AsyncClient = lambda **kw: cliente_real(transport=httpx.MockTransport(sin_red), **kw)
+    for var in ("MODO_BORRADOR", "TTS_PROVEEDOR", "GEMINI_API_KEY"):
+        os.environ.pop(var, None)
+    os.environ.update({"OPENAI_API_KEY": "sk-test", "PUBLIC_URL": "https://agente.test", "HUMANIZAR": "false"})
+    try:
+        await main_mod.procesar_mensaje(MensajeEntrante(telefono=tel, texto="hola", mensaje_id="t1"))
+        await main_mod.procesar_mensaje(MensajeEntrante(telefono=tel, texto="", mensaje_id="t2", audio_ref="m1"))
+    finally:
+        brain.generar_respuesta, voz.transcribir, main_mod.proveedor, httpx.AsyncClient = reales
+        for var in ("OPENAI_API_KEY", "PUBLIC_URL", "HUMANIZAR"):
+            os.environ.pop(var, None)
+    assert llamadas == [False, True]  # instrucción de voz solo en el turno de nota de voz
+    assert audios == [] and textos == ["Claro que sí, la hora está en $3.500"] * 2  # TTS caído → texto
+
+    # Voz colgada: al vencer VOZ_TIMEOUT_TOTAL sale el texto
+    async def sintetizar_lento(texto):
+        await asyncio.sleep(5)
+        return b"tarde"
+
+    textos.clear()
+    reales_voz = (brain.generar_respuesta, voz.transcribir, main_mod.proveedor, voz.sintetizar,
+                  main_mod.VOZ_TIMEOUT_TOTAL)
+    brain.generar_respuesta, voz.transcribir, main_mod.proveedor = generar, transcribir, FakeProv()
+    voz.sintetizar, main_mod.VOZ_TIMEOUT_TOTAL = sintetizar_lento, 0.05
+    os.environ.update({"OPENAI_API_KEY": "sk-test", "PUBLIC_URL": "https://agente.test", "HUMANIZAR": "false"})
+    try:
+        await main_mod.procesar_mensaje(MensajeEntrante(telefono=tel, texto="", mensaje_id="t3", audio_ref="m2"))
+    finally:
+        (brain.generar_respuesta, voz.transcribir, main_mod.proveedor, voz.sintetizar,
+         main_mod.VOZ_TIMEOUT_TOTAL) = reales_voz
+        for var in ("OPENAI_API_KEY", "PUBLIC_URL", "HUMANIZAR"):
+            os.environ.pop(var, None)
+    assert audios == [] and textos == ["Claro que sí, la hora está en $3.500"]
+
+
+def test_voz_fluida_solo_en_turnos_de_voz():
+    asyncio.run(_test_voz_fluida_solo_en_turnos_de_voz())
+
+
 if __name__ == "__main__":
     test_humanizar()
     test_firma_twilio()
@@ -732,4 +968,7 @@ if __name__ == "__main__":
     test_precios_modelos_claude_y_json_malo()
     test_voz_valores_de_otro_proveedor()
     test_estado_costo_falla_no_rompe()
+    test_es_fiel()
+    test_tts_gpt_audio_payload_guarda_y_costo()
+    test_voz_fluida_solo_en_turnos_de_voz()
     print("OK — todos los self-checks pasaron")
