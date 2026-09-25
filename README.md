@@ -97,45 +97,63 @@ corregir uno sin tocar código, crea `config/precios.json`, p. ej.
 `{"claude-haiku-4-5": {"salida": "5"}}`, o apunta `PRECIOS_ARCHIVO` a otro JSON;
 si el JSON está mal formado se registra el error en el log y se usa la tabla interna).
 
-**El costo de la voz de salida es estimado**, no exacto: el precio por minuto de
-`gpt-4o-mini-tts` (USD 0,015) no está verificado — OpenAI hoy lo publica por
-tokens de audio — y la duración se estima por caracteres (~15 por segundo).
+**El costo de la voz de salida es estimado**, no exacto: la duración del audio
+se estima por caracteres (~15 por segundo). El precio de Gemini 2.5 Flash TTS
+sí está verificado (USD 10 por millón de tokens de audio, 25 tokens/s ≈ USD
+0,015/min); el de `gpt-4o-mini-tts` (respaldo, USD 0,015/min) no — OpenAI hoy
+lo publica solo por tokens de audio.
 El de Claude sí sale del `usage` real, y el de la transcripción de la duración
 real de la nota de voz (OGG de WhatsApp; otros formatos se estiman por tamaño).
 
 ## Voz del agente (sin tocar código)
 
+Decisión tras la prueba de oído (2026-09-25): el agente **escucha** con OpenAI
+`gpt-4o-mini-transcribe` y **habla** con Gemini `gemini-2.5-flash-preview-tts`,
+voz `Kore`. OpenAI `gpt-4o-mini-tts` (voz `marin`) queda de respaldo si no hay
+`GEMINI_API_KEY`.
+
+> **Advertencia (Ley 1581):** usa una `GEMINI_API_KEY` de un proyecto con
+> **facturación activa** (tier de pago). En el tier gratis Google puede usar los
+> datos para entrenar sus modelos, y eso choca con el tratamiento de datos que
+> AgentKit promete al cliente.
+
 Todo se cambia en el `.env` y se aplica al reiniciar el agente:
 
 | Variable | Default | Para qué |
 |----------|---------|----------|
-| `OPENAI_API_KEY` | — | Activa la voz: entiende notas de voz (`gpt-4o-mini-transcribe`) y responde en voz (`gpt-4o-mini-tts`, mp3) |
-| `TTS_VOZ` | `marin` (OpenAI) / `Kore` (Gemini) | Voz de salida. OpenAI: `alloy`, `ash`, `ballad`, `coral`, `echo`, `fable`, `onyx`, `nova`, `sage`, `shimmer`, `verse`, `marin`, `cedar` (en prueba de oído: `marin`, `coral`, `cedar`). Gemini: `Kore`, `Puck`, `Zephyr`… |
-| `OPENAI_TTS_VOZ` / `GEMINI_TTS_VOZ` | — | Voz solo para ese proveedor; gana sobre `TTS_VOZ` (útil para dejar lista la voz del respaldo) |
-| `TTS_MODELO` | `gpt-4o-mini-tts` (OpenAI) / `gemini-2.5-flash-preview-tts` (Gemini) | Modelo de voz de salida |
-| `VOZ_MODELO` | `gpt-4o-mini-transcribe` (OpenAI) / `whisper-large-v3` (Groq) | Modelo de transcripción |
-| `TTS_INSTRUCCIONES` | español de Colombia, cálido y conversacional, ritmo natural, nada de locutor ni robot | Cómo habla: tono, acento, ritmo. Texto libre, p. ej. `TTS_INSTRUCCIONES="Habla como una recepcionista paisa, alegre y sin afanes"` |
-| `TTS_PROVEEDOR` | `openai` | `gemini` solo como respaldo (`GEMINI_API_KEY`, requiere ffmpeg) |
+| `GEMINI_API_KEY` | — | Voz de salida (Gemini, requiere `ffmpeg` instalado para pasar a mp3). Key con facturación activa |
+| `OPENAI_API_KEY` | — | Entiende notas de voz (`gpt-4o-mini-transcribe`) y es el respaldo de la voz de salida (`gpt-4o-mini-tts`, mp3) |
+| `TTS_PROVEEDOR` | `gemini` | `openai` para forzar el respaldo |
+| `TTS_VOZ` | `Kore` (Gemini) / `marin` (OpenAI) | Voz de salida. Gemini: `Kore`, `Puck`, `Zephyr`, `Aoede`… (30 voces). OpenAI: `alloy`, `ash`, `ballad`, `coral`, `echo`, `fable`, `onyx`, `nova`, `sage`, `shimmer`, `verse`, `marin`, `cedar` |
+| `GEMINI_TTS_VOZ` / `OPENAI_TTS_VOZ` | — | Voz solo para ese proveedor; gana sobre `TTS_VOZ` (útil para dejar lista la voz del respaldo) |
+| `TTS_INSTRUCCIONES` | español de Colombia, cálido y conversacional, ritmo natural, nada de locutor ni robot | Cómo habla: tono, acento, ritmo. Texto libre, p. ej. `TTS_INSTRUCCIONES="Habla como una recepcionista paisa, alegre y sin afanes"`. OpenAI la recibe en su campo `instructions`; Gemini no tiene ese campo y la recibe **antepuesta al texto**: `instrucciones`, una línea en blanco y el texto (así se generó la muestra elegida, sin que el modelo la leyera en voz alta) |
+| `TTS_MODELO` | `gemini-2.5-flash-preview-tts` (Gemini) / `gpt-4o-mini-tts` (OpenAI) | Modelo de voz de salida. `gemini-3.8-flash-tts` es el sucesor si el preview se retira, pero lee el texto literal (leería las instrucciones) y devuelve WAV: no cambiarlo sin adaptar el core y repetir la prueba de oído |
 | `STT_PROVEEDOR` | `openai` | `groq` para transcribir gratis con `GROQ_API_KEY` |
+| `VOZ_MODELO` | `gpt-4o-mini-transcribe` (OpenAI) / `whisper-large-v3` (Groq) | Modelo de transcripción |
 
 Para que responda en voz también hace falta `PUBLIC_URL` (el proveedor
 descarga el audio desde `/audio/{id}`). Si el cliente escribe, el agente
 responde por texto; si manda nota de voz, responde con nota de voz.
 
 - Cada proveedor valida el modelo y la voz que recibe: si el valor es de otro
-  proveedor (p. ej. `TTS_VOZ=Kore` con OpenAI), lo ignora, usa su default y lo
-  avisa una vez en el log.
+  proveedor (p. ej. `TTS_VOZ=marin` cuando habla Gemini), lo ignora, usa su
+  default y lo avisa una vez en el log.
 - Forzar un proveedor (`TTS_PROVEEDOR` / `STT_PROVEEDOR`) sin su key deja al
   agente **sin esa voz**: no cae al otro proveedor.
 
 ### Actualizar un agente a v0.7.0
 
-Antes Groq y Gemini eran lo recomendado; ahora la voz va por OpenAI y el modelo
-por defecto es Haiku 4.5. En el `.env` del agente conviene **borrar**:
-`VOZ_MODELO=whisper-large-v3`, `TTS_MODELO=gemini-…`, `TTS_VOZ=Kore` (o `nova`)
-y `CLAUDE_MODEL=claude-sonnet-5` (salvo que ese agente necesite Sonnet). Si se
-quedan no rompen nada — se ignoran con un aviso —, pero confunden. `GROQ_API_KEY`
-y `GEMINI_API_KEY` pueden quedarse como respaldo.
+El modelo por defecto pasa a Haiku 4.5, la transcripción a OpenAI y la voz de
+salida a Gemini `Kore`. En el `.env` del agente:
+
+- **Agregar** `OPENAI_API_KEY` (escuchar) y `GEMINI_API_KEY` con facturación
+  activa (hablar); el contenedor necesita `ffmpeg` (el Dockerfile de AgentKit ya
+  lo instala).
+- **Borrar** `VOZ_MODELO=whisper-large-v3` (salvo que siga en Groq),
+  `TTS_VOZ=nova`/`marin`, `TTS_MODELO=gpt-4o-mini-tts` y
+  `CLAUDE_MODEL=claude-sonnet-5` (salvo que ese agente necesite Sonnet). Si se
+  quedan no rompen nada — se ignoran con un aviso o se vuelven el respaldo —,
+  pero confunden. `GROQ_API_KEY` puede quedarse como respaldo.
 
 ## Stack
 
@@ -146,7 +164,7 @@ y `GEMINI_API_KEY` pueden quedarse como respaldo.
 | IA | Anthropic Claude (`claude-haiku-4-5` por defecto, con tool use; `CLAUDE_MODEL` para cambiarlo) |
 | Canales | WhatsApp (Meta Cloud API / Twilio) e Instagram DM |
 | Base de datos | SQLite (local) / PostgreSQL (producción) |
-| Voz | OpenAI `gpt-4o-mini-transcribe` + `gpt-4o-mini-tts` (opcional; Groq/Gemini de respaldo) |
+| Voz | Escucha: OpenAI `gpt-4o-mini-transcribe`. Habla: Gemini `gemini-2.5-flash-preview-tts` voz `Kore` (OpenAI de respaldo). Opcional |
 | Pagos | Wompi / MercadoPago / Stripe (opcional, según país) |
 | Deploy | Docker + Railway |
 

@@ -15,19 +15,25 @@ Este documento manda sobre cualquier nota anterior; se cambia por decisión expl
   agente corre aislado en `<cliente>.agentes.ncchub.dev`.
 - Twilio no es opción de producción. Queda solo como sandbox de demo si Meta no está disponible.
 
-## 2. Voz: OpenAI, que suene humana ante todo (actualizado 2026-09-25, core v0.7.0)
+## 2. Voz: que suene humana ante todo (actualizado 2026-09-25, core v0.7.0)
 
 - Meta de AgentKit: el cliente nunca debe sentir que habla con un bot. En la voz manda que suene
   humana; el precio va después.
 - Entrada: `gpt-4o-mini-transcribe` (USD 0,003/min) por defecto cuando hay `OPENAI_API_KEY`.
   Groq solo como respaldo (`STT_PROVEEDOR=groq` o sin key de OpenAI).
-- Salida: `gpt-4o-mini-tts` (mp3). Gemini queda solo de respaldo si no hay key de OpenAI. El TTS
-  es configurable por proveedor sin tocar código (`TTS_PROVEEDOR`, `TTS_VOZ`, `TTS_INSTRUCCIONES`);
-  el core deja el punto de extensión para Deepgram/ElevenLabs.
-- **Pendiente: prueba de oído** entre las voces `marin` (default), `coral` y `cedar`, con las
-  instrucciones default (español de Colombia, cálido, conversacional, nada de locutor ni robot).
-  Si ninguna convence, se prueba otro proveedor antes de fijarlo.
-- Deepgram/ElevenLabs únicamente si la prueba de oído lo justifica o un cliente lo pide y lo paga.
+- Salida: **Gemini `gemini-2.5-flash-preview-tts`, voz `Kore`**, elegida en la prueba de oído del
+  2026-09-25 (a ciegas contra OpenAI marin/coral/cedar y Gemini Puck/Aoede). El estilo
+  (`TTS_INSTRUCCIONES`: español de Colombia, cálido, conversacional, nada de locutor ni robot) va
+  antepuesto al texto, como se generó la muestra. OpenAI `gpt-4o-mini-tts` (voz `marin`) queda de
+  respaldo si no hay `GEMINI_API_KEY`. Todo configurable sin tocar código (`TTS_PROVEEDOR`,
+  `TTS_VOZ`, `TTS_INSTRUCCIONES`); el core deja el punto de extensión para Deepgram/ElevenLabs.
+- **Advertencia:** la `GEMINI_API_KEY` debe ser de un proyecto con **facturación activa** (tier de
+  pago). En el tier gratis Google puede usar los datos para entrenar, lo que choca con la Ley 1581
+  frente al cliente (por eso Gemini gratis sigue descartado en la def. 3).
+- `gemini-3.8-flash-tts` es la sucesora si el preview se retira: lee el texto literal (pide el
+  estilo en `speech_metadata`) y devuelve WAV, así que el cambio requiere ajustar el core y repetir
+  la prueba de oído.
+- Deepgram/ElevenLabs únicamente si un cliente lo pide y lo paga.
 - Costo registrado por agente: cada transcripción y cada síntesis quedan en la tabla `uso_api`
   con su costo en USD (ver def. 3).
 

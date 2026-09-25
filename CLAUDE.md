@@ -38,7 +38,7 @@ Lo que el core ya trae (no lo re-implementes):
 | Canales: **WhatsApp** (Meta Cloud API o Twilio) e **Instagram DM**, con validación de firma de webhooks | `agentkit/providers/` |
 | Herramientas base: buscar conocimiento, registrar lead, crear ticket, recordar cliente, **derivar a humano** (pausa el bot y avisa al equipo), **link de pago** (Wompi / MercadoPago / Stripe) | `agentkit/herramientas.py` |
 | Respuestas en **burbujas cortas con pausas** (humanización) | `agentkit/humanizar.py` |
-| **Notas de voz** → texto (OpenAI `gpt-4o-mini-transcribe`) y **respuesta en voz** natural (OpenAI `gpt-4o-mini-tts`, opcional; voz e instrucciones configurables en .env) | `agentkit/voz.py` |
+| **Notas de voz** → texto (OpenAI `gpt-4o-mini-transcribe`) y **respuesta en voz** natural (Gemini `gemini-2.5-flash-preview-tts`, voz `Kore`, elegida por prueba de oído; OpenAI `gpt-4o-mini-tts` de respaldo; voz e instrucciones configurables en .env) | `agentkit/voz.py` |
 | **Costo en USD por agente**: cada llamada a Claude/STT/TTS queda en la tabla `uso_api`; `/estado` devuelve `costo_usd` (hoy, mes, desglose) | `agentkit/precios.py` + `agentkit/memory.py` |
 | **Reporte diario** al equipo por WhatsApp (`GET /reporte?token=...`) | `agentkit/reporte.py` |
 | **Estado del agente en JSON** para un panel externo (`GET /estado?token=...`) | `agentkit/main.py` + `agentkit/estado.py` |
@@ -220,17 +220,21 @@ PREGUNTA 13 (opcional): ¿Quieres que el agente entienda notas de voz?
 
             Y si SÍ: ¿quieres que también RESPONDA con voz cuando el cliente
             le hable? La meta es que el cliente nunca sienta que habla con un
-            bot. Con la misma OPENAI_API_KEY responde con gpt-4o-mini-tts
-            (~USD 0,015/min, mp3 directo, sin ffmpeg). Además requiere
-            PUBLIC_URL configurada (el proveedor descarga el audio desde /audio/{id}).
-            - TTS_VOZ: marin (default), coral o cedar — la que gane la prueba
-              de oído; ofrécele escuchar las tres antes de fijarla.
+            bot. Voz elegida por prueba de oído: Gemini
+            gemini-2.5-flash-preview-tts con la voz Kore (~USD 0,015/min).
+            - Pide GEMINI_API_KEY (aistudio.google.com → Get API key) de un
+              proyecto con FACTURACIÓN ACTIVA. ADVIÉRTELE: en el tier gratis
+              Google puede usar los datos para entrenar, y eso choca con la
+              Ley 1581 frente a sus clientes. Nunca una key del tier gratis.
+            - Requiere ffmpeg (el Dockerfile ya lo instala) y PUBLIC_URL
+              configurada (el proveedor descarga el audio desde /audio/{id}).
+            - TTS_VOZ: Kore (default; no la cambies sin que el usuario lo pida).
             - TTS_INSTRUCCIONES: cómo habla (tono, acento, ritmo). Default:
               español de Colombia, cálido, cercano y conversacional, ritmo
               natural, nada de locutor ni de robot. Ajústalo al tono del
-              negocio sin tocar código.
-            - Gemini (GEMINI_API_KEY + ffmpeg) queda SOLO como respaldo si no
-              hay key de OpenAI; no lo ofrezcas como primera opción.
+              negocio sin tocar código (a Gemini le llega antepuesto al texto).
+            - OpenAI gpt-4o-mini-tts (voz marin, con la misma OPENAI_API_KEY)
+              queda SOLO como respaldo si no hay GEMINI_API_KEY.
             Regla: si el cliente mandó nota de voz, el agente responde SOLO con
             nota de voz; el texto se envía únicamente si la voz falló o si la
             respuesta trae un link (que la voz no puede transmitir).
@@ -366,12 +370,13 @@ DATABASE_URL=sqlite+aiosqlite:///./agentkit.db
 # CLAUDE_MODEL=claude-haiku-4-5  # default; claude-sonnet-5 solo como escalada
 # ADMIN_PHONE=+57...            # avisos al equipo (leads, tickets, derivaciones, reporte)
 # REPORTE_TOKEN=un-token-secreto  # habilita GET /reporte y GET /estado (con costo_usd)
-# OPENAI_API_KEY=sk-...         # notas de voz (gpt-4o-mini-transcribe) y respuesta en voz (gpt-4o-mini-tts)
-# TTS_VOZ=marin                 # marin | coral | cedar (según la prueba de oído)
+# OPENAI_API_KEY=sk-...         # notas de voz (gpt-4o-mini-transcribe) + respaldo de la voz de salida
+# GEMINI_API_KEY=AIza...        # voz de salida Gemini (requiere ffmpeg). SOLO key con facturación
+#                               # activa: el tier gratis puede entrenar con los datos (Ley 1581)
+# TTS_VOZ=Kore                  # voz elegida en la prueba de oído (respaldo OpenAI: marin)
 # TTS_INSTRUCCIONES="Habla en español de Colombia, con tono cálido, cercano y conversacional, a ritmo natural, como una persona amable que atiende por WhatsApp; nada de locutor ni de robot."
 # STT_PROVEEDOR=groq            # solo si se quiere transcribir gratis con Groq
 # GROQ_API_KEY=gsk_...          # respaldo de transcripción
-# GEMINI_API_KEY=AIza...        # respaldo de la voz de salida si no hay OpenAI (requiere ffmpeg)
 # HUMANIZAR=true                # burbujas cortas con pausas
 # PAUSA_MINUTOS=60              # cuánto se pausa el bot al derivar a humano
 # NOMBRE_HUMANO=un asesor       # cómo llama el bot a quien atiende al derivar ("el barbero")

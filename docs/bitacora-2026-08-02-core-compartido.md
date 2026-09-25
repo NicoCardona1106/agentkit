@@ -80,10 +80,12 @@ agentes con `pip install --upgrade`.
   fija la versión). Sonnet 5 solo con `CLAUDE_MODEL` explícito. Se conserva `cache_control`.
 - **Voz de entrada:** OpenAI `gpt-4o-mini-transcribe` si hay `OPENAI_API_KEY`; Groq solo si
   `STT_PROVEEDOR=groq` o si no hay key de OpenAI (antes Groq tenía prioridad).
-- **Voz de salida:** `TTS_PROVEEDOR` (openai por defecto, gemini de respaldo) con tabla de
-  proveedores en `voz.py` para sumar otros sin reescribir. OpenAI con `TTS_VOZ` (default `marin`)
-  y `TTS_INSTRUCCIONES` (default: español de Colombia, cálido y conversacional). Sigue en mp3.
-  Pendiente la prueba de oído marin / coral / cedar.
+- **Voz de salida:** tras la prueba de oído, Gemini `gemini-2.5-flash-preview-tts` con la voz
+  `Kore` por defecto; OpenAI `gpt-4o-mini-tts` (`marin`) de respaldo si no hay `GEMINI_API_KEY`.
+  `TTS_PROVEEDOR` fuerza uno; tabla de proveedores en `voz.py` para sumar otros sin reescribir.
+  `TTS_INSTRUCCIONES` aplica a los dos: OpenAI en `instructions`, Gemini antepuesta al texto
+  (`instrucciones`, línea en blanco, texto; no se antepone en Gemini 3.8, que la leería). Sigue en
+  mp3. La key de Gemini debe tener facturación activa (Ley 1581).
 - **Costo en USD por agente:** tabla `uso_api` (se crea sola al arrancar), una fila por llamada a
   Claude, STT o TTS. `agentkit/precios.py` con precios verificados en las páginas oficiales y
   override en `config/precios.json`. Todo con `Decimal`; un fallo al registrar solo se loguea.

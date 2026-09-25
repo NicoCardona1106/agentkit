@@ -131,7 +131,13 @@ def test_tts():
     os.environ.pop("TTS_PROVEEDOR", None)
     os.environ["OPENAI_API_KEY"] = "sk-test"
     os.environ["GEMINI_API_KEY"] = "AIza-test"
-    assert voz._elegir(voz._TTS, "TTS_PROVEEDOR") == "openai"  # default con ambas keys
+    assert voz._elegir(voz._TTS, "TTS_PROVEEDOR") == "gemini"  # default con ambas keys (prueba de oído)
+    os.environ["TTS_PROVEEDOR"] = "openai"
+    assert voz._elegir(voz._TTS, "TTS_PROVEEDOR") == "openai"
+    os.environ.pop("TTS_PROVEEDOR")
+    os.environ.pop("GEMINI_API_KEY")
+    assert voz._elegir(voz._TTS, "TTS_PROVEEDOR") == "openai"  # respaldo sin key de Gemini
+    os.environ["GEMINI_API_KEY"] = "AIza-test"
     os.environ["TTS_PROVEEDOR"] = "gemini"
     assert voz._elegir(voz._TTS, "TTS_PROVEEDOR") == "gemini"
     os.environ["TTS_PROVEEDOR"] = "elevenlabs"  # aún no implementado: sin voz, no otro proveedor
@@ -468,8 +474,18 @@ def test_voz_valores_de_otro_proveedor():
         os.environ.update({"GEMINI_API_KEY": "AIza-test", "TTS_VOZ": "marin", "TTS_MODELO": "gpt-4o-mini-tts"})
         assert asyncio.run(voz.sintetizar("hola")) == b"mp3-gemini"
         assert "gemini-2.5-flash-preview-tts" in str(enviados[-1].url)
-        voz_gemini = json.loads(enviados[-1].content)["generationConfig"]["speechConfig"]
+        cuerpo = json.loads(enviados[-1].content)
+        voz_gemini = cuerpo["generationConfig"]["speechConfig"]
         assert voz_gemini["voiceConfig"]["prebuiltVoiceConfig"]["voiceName"] == "Kore"
+        # Gemini no tiene campo instructions: el estilo va antepuesto, como en la prueba de oído
+        assert cuerpo["contents"][0]["parts"][0]["text"] == f"{voz.INSTRUCCIONES_DEFAULT}\n\nhola"
+        os.environ["TTS_INSTRUCCIONES"] = "Habla como paisa"
+        asyncio.run(voz.sintetizar("hola"))
+        assert json.loads(enviados[-1].content)["contents"][0]["parts"][0]["text"] == "Habla como paisa\n\nhola"
+        os.environ["TTS_MODELO"] = "gemini-3.8-flash-tts"  # lee el texto literal: sin prefijo
+        asyncio.run(voz.sintetizar("hola"))
+        assert json.loads(enviados[-1].content)["contents"][0]["parts"][0]["text"] == "hola"
+        os.environ["TTS_MODELO"] = "gpt-4o-mini-tts"
         os.environ["GEMINI_TTS_VOZ"] = "Puck"
         asyncio.run(voz.sintetizar("hola"))
         voz_gemini = json.loads(enviados[-1].content)["generationConfig"]["speechConfig"]

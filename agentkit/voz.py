@@ -5,12 +5,15 @@
 #   - GROQ_API_KEY   → Groq whisper-large-v3 (capa gratis) — si no hay key de OpenAI
 #   STT_PROVEEDOR=openai|groq fuerza uno (y solo ese; sin su key, el agente queda sin STT).
 #   VOZ_MODELO cambia el modelo.
-# Salida (texto → audio, siempre mp3). Decisión 2026-09-25: OpenAI gpt-4o-mini-tts; Gemini
-# queda solo como respaldo si no hay OPENAI_API_KEY. TTS_PROVEEDOR=openai|gemini fuerza uno.
-#   - openai → gpt-4o-mini-tts, mp3 directo. OPENAI_TTS_VOZ o TTS_VOZ (default marin; en prueba
-#     de oído contra coral y cedar) y TTS_INSTRUCCIONES (tono, acento y ritmo).
-#   - gemini → Gemini TTS (capa gratis en AI Studio; devuelve PCM, requiere ffmpeg para mp3).
-#     GEMINI_TTS_VOZ o TTS_VOZ (default Kore).
+# Salida (texto → audio, siempre mp3). Decisión 2026-09-25, tras la prueba de oído: Gemini
+# gemini-2.5-flash-preview-tts con la voz Kore; OpenAI queda de respaldo si no hay
+# GEMINI_API_KEY. TTS_PROVEEDOR=gemini|openai fuerza uno.
+#   - gemini → GEMINI_TTS_VOZ o TTS_VOZ (default Kore). Devuelve PCM: requiere ffmpeg para mp3.
+#     Usar una key con facturación activa: en el tier gratis Google puede entrenar con los datos
+#     (choca con la Ley 1581 frente al cliente).
+#   - openai → gpt-4o-mini-tts, mp3 directo. OPENAI_TTS_VOZ o TTS_VOZ (default marin).
+#   TTS_INSTRUCCIONES (tono, acento y ritmo) aplica a los dos: OpenAI la recibe en `instructions`;
+#   Gemini no tiene ese campo y la recibe antepuesta al texto (ver _texto_gemini).
 #   TTS_MODELO cambia el modelo. Forzar un proveedor sin su key deja al agente sin voz de salida.
 # Cada proveedor valida modelo y voz: si un valor es de otro proveedor (un .env viejo con
 # VOZ_MODELO=whisper-large-v3 o TTS_VOZ=Kore al pasar a OpenAI), usa su default y avisa una vez.
@@ -182,6 +185,19 @@ async def _sintetizar_openai(texto: str, modelo: str) -> bytes | None:
         return r.content
 
 
+def _texto_gemini(texto: str, modelo: str) -> str:
+    """Gemini 2.5 no tiene campo de instrucciones: el estilo va antepuesto al texto:
+    las instrucciones, una línea en blanco y el texto (formato con el que se generó la muestra elegida en la prueba de
+    oído, donde el modelo interpretó el estilo sin leerlo en voz alta).
+    OJO: Gemini 3.8 TTS trata el texto como transcripción literal y LEERÍA el estilo en voz alta
+    (pide `speech_metadata.style`, y además devuelve WAV y no PCM); por eso el prefijo solo va a los
+    modelos anteriores y 3.8 no es un cambio de TTS_MODELO sin adaptar el código y probar de oído."""
+    instrucciones = os.getenv("TTS_INSTRUCCIONES", INSTRUCCIONES_DEFAULT).strip()
+    if instrucciones and modelo.startswith(("gemini-2.", "gemini-3.1-")):
+        return f"{instrucciones}\n\n{texto}"
+    return texto
+
+
 async def _sintetizar_gemini(texto: str, modelo: str) -> bytes | None:
     """Gemini TTS devuelve PCM crudo (24kHz, 16-bit, mono) — se convierte a mp3 con ffmpeg."""
     async with httpx.AsyncClient(timeout=60) as client:
@@ -189,7 +205,7 @@ async def _sintetizar_gemini(texto: str, modelo: str) -> bytes | None:
             f"https://generativelanguage.googleapis.com/v1beta/models/{modelo}:generateContent",
             headers={"x-goog-api-key": os.getenv("GEMINI_API_KEY")},
             json={
-                "contents": [{"parts": [{"text": texto}]}],
+                "contents": [{"parts": [{"text": _texto_gemini(texto, modelo)}]}],
                 "generationConfig": {
                     "responseModalities": ["AUDIO"],
                     "speechConfig": {"voiceConfig": {"prebuiltVoiceConfig": {
@@ -226,9 +242,11 @@ async def _pcm_a_mp3(pcm: bytes) -> bytes | None:
 
 
 # proveedor → (variable de la key, función texto→mp3, modelo por defecto, ¿el modelo es suyo?).
-# El orden es la prioridad.
+# El orden es la prioridad: Gemini (elegida por prueba de oído) y OpenAI de respaldo.
+# gemini-3.8-flash-tts existe y es la sucesora si el preview 2.5 se retira: no cambiar el default
+# sin prueba de oído (ver _texto_gemini).
 _TTS = {
-    "openai": ("OPENAI_API_KEY", _sintetizar_openai, "gpt-4o-mini-tts", lambda m: m.startswith(("gpt-", "tts-"))),
     "gemini": ("GEMINI_API_KEY", _sintetizar_gemini, "gemini-2.5-flash-preview-tts",
                lambda m: m.startswith("gemini-")),
+    "openai": ("OPENAI_API_KEY", _sintetizar_openai, "gpt-4o-mini-tts", lambda m: m.startswith(("gpt-", "tts-"))),
 }
