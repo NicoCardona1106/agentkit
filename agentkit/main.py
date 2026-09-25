@@ -180,6 +180,11 @@ async def estado_agente(request: Request, token: str = ""):
         raise HTTPException(status_code=403, detail="Token inválido")
     from agentkit import __version__
     resumen = await memory.resumen_estado()
+    try:
+        costo = await memory.resumen_costos()
+    except Exception as e:  # el costo es un extra: si falla, el resto del estado sale igual
+        logger.error(f"No se pudo calcular costo_usd para /estado: {e}")
+        costo = None
     return {
         "service": "agentkit",
         "version": __version__,
@@ -191,4 +196,5 @@ async def estado_agente(request: Request, token: str = ""):
         "modo_borrador": borrador.activo(),
         **resumen,
         "errores_24h": estado.contador_errores.contar_24h(),
+        "costo_usd": costo,  # {hoy, mes, desglose del mes, modelos_sin_precio} o null si falló
     }

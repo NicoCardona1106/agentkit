@@ -8,14 +8,17 @@ import yaml
 from anthropic import AsyncAnthropic
 from dotenv import find_dotenv, load_dotenv
 
-from agentkit import herramientas, memory
+from agentkit import herramientas, memory, precios
 from agentkit.providers.base import ProveedorWhatsApp
 
 load_dotenv(find_dotenv(usecwd=True))  # el .env vive en la carpeta del agente (cwd), no junto al paquete
 logger = logging.getLogger("agentkit")
 
 client = AsyncAnthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-MODELO = os.getenv("CLAUDE_MODEL", "claude-sonnet-5")
+# Haiku 4.5 por defecto (definición 3); Sonnet 5 solo con CLAUDE_MODEL explícito.
+# "claude-haiku-4-5" es el alias de la API: apunta siempre al último snapshot. Para fijar la
+# versión exacta usa el ID con fecha: CLAUDE_MODEL=claude-haiku-4-5-20251001.
+MODELO = os.getenv("CLAUDE_MODEL", "claude-haiku-4-5")
 MAX_TOKENS = int(os.getenv("MAX_TOKENS", "1024"))
 MAX_ITERACIONES_TOOLS = 8
 
@@ -77,6 +80,7 @@ async def generar_respuesta(telefono: str, mensaje: str, historial: list[dict],
                 model=MODELO, max_tokens=MAX_TOKENS, system=system,
                 tools=esquemas, messages=mensajes,
             )
+            await precios.registrar("llm", "anthropic", MODELO, usage=respuesta.usage)  # nunca lanza
             if respuesta.stop_reason != "tool_use":
                 break
             mensajes.append({"role": "assistant", "content": respuesta.content})

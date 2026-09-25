@@ -74,6 +74,29 @@ agentes con `pip install --upgrade`.
   Meta para producción, Instagram para marcas con audiencia ahí), pasarela por
   país, y hosting según el caso (Railway default; Render/Fly/Cloud Run/VPS).
 
+## v0.7.0 (2026-09-25) — Haiku por defecto, voz humana configurable y costo por agente
+
+- **Modelo:** `claude-haiku-4-5` por defecto (alias de la API; `CLAUDE_MODEL=claude-haiku-4-5-20251001`
+  fija la versión). Sonnet 5 solo con `CLAUDE_MODEL` explícito. Se conserva `cache_control`.
+- **Voz de entrada:** OpenAI `gpt-4o-mini-transcribe` si hay `OPENAI_API_KEY`; Groq solo si
+  `STT_PROVEEDOR=groq` o si no hay key de OpenAI (antes Groq tenía prioridad).
+- **Voz de salida:** tras la prueba de oído, Gemini `gemini-2.5-flash-preview-tts` con la voz
+  `Kore` por defecto; OpenAI `gpt-4o-mini-tts` (`marin`) de respaldo si no hay `GEMINI_API_KEY`.
+  `TTS_PROVEEDOR` fuerza uno; tabla de proveedores en `voz.py` para sumar otros sin reescribir.
+  `TTS_INSTRUCCIONES` aplica a los dos: OpenAI en `instructions`, Gemini antepuesta al texto
+  (`instrucciones`, línea en blanco, texto; no se antepone en Gemini 3.8, que la leería). Sigue en
+  mp3. La key de Gemini debe tener facturación activa (Ley 1581).
+- **Costo en USD por agente:** tabla `uso_api` (se crea sola al arrancar), una fila por llamada a
+  Claude, STT o TTS. `agentkit/precios.py` con precios verificados en las páginas oficiales y
+  override en `config/precios.json`. Todo con `Decimal`; un fallo al registrar solo se loguea.
+  `GET /estado` agrega `costo_usd {hoy, mes, desglose}` (hora de Bogotá) sin tocar los campos previos.
+- **Dependencias:** `sqlalchemy[asyncio]` (trae greenlet; un venv limpio fallaba sin él).
+- Revisión: cada proveedor de voz valida modelo y voz (un .env viejo con Groq/Gemini sigue
+  funcionando con OpenAI; `OPENAI_TTS_VOZ`/`GEMINI_TTS_VOZ` ganan sobre `TTS_VOZ`); precios de
+  Sonnet 4.x y Opus 4.x/5.x; `usd` con 10 decimales fijos; `precios.json` en caché y tolerante a
+  errores; `costo_usd.modelos_sin_precio` y `costo_usd: null` si el cálculo falla.
+- Pruebas: `pytest -q` → 18 pruebas sin red ni APIs reales (y `python tests/test_core.py` corre además los self-checks async).
+
 ## Pendientes conocidos
 
 - Verificar el shape exacto de los APIs de pago (Wompi payment_links,

@@ -15,20 +15,43 @@ Este documento manda sobre cualquier nota anterior; se cambia por decisión expl
   agente corre aislado en `<cliente>.agentes.ncchub.dev`.
 - Twilio no es opción de producción. Queda solo como sandbox de demo si Meta no está disponible.
 
-## 2. Voz: solo OpenAI
+## 2. Voz: que suene humana ante todo (actualizado 2026-09-25, core v0.7.0)
 
-- Entrada `gpt-4o-mini-transcribe`, salida `gpt-4o-mini-tts` (~USD 2/cliente/mes).
-- Deepgram únicamente si un cliente lo pide y lo paga.
+- Meta de AgentKit: el cliente nunca debe sentir que habla con un bot. En la voz manda que suene
+  humana; el precio va después.
+- Entrada: `gpt-4o-mini-transcribe` (USD 0,003/min) por defecto cuando hay `OPENAI_API_KEY`.
+  Groq solo como respaldo (`STT_PROVEEDOR=groq` o sin key de OpenAI).
+- Salida: **Gemini `gemini-2.5-flash-preview-tts`, voz `Kore`**, elegida en la prueba de oído del
+  2026-09-25 (a ciegas contra OpenAI marin/coral/cedar y Gemini Puck/Aoede). El estilo
+  (`TTS_INSTRUCCIONES`: español de Colombia, cálido, conversacional, nada de locutor ni robot) va
+  antepuesto al texto, como se generó la muestra. OpenAI `gpt-4o-mini-tts` (voz `marin`) queda de
+  respaldo si no hay `GEMINI_API_KEY`. Todo configurable sin tocar código (`TTS_PROVEEDOR`,
+  `TTS_VOZ`, `TTS_INSTRUCCIONES`); el core deja el punto de extensión para Deepgram/ElevenLabs.
+- **Advertencia:** la `GEMINI_API_KEY` debe ser de un proyecto con **facturación activa** (tier de
+  pago). En el tier gratis Google puede usar los datos para entrenar, lo que choca con la Ley 1581
+  frente al cliente (por eso Gemini gratis sigue descartado en la def. 3).
+- `gemini-3.8-flash-tts` es la sucesora si el preview se retira: lee el texto literal (pide el
+  estilo en `speech_metadata`) y devuelve WAV, así que el cambio requiere ajustar el core y repetir
+  la prueba de oído.
+- Deepgram/ElevenLabs únicamente si un cliente lo pide y lo paga.
+- Costo registrado por agente: cada transcripción y cada síntesis quedan en la tabla `uso_api`
+  con su costo en USD (ver def. 3).
 
 ## 3. Modelo de lenguaje: Claude Haiku 4.5 con prompt caching, Sonnet 5 en escalada
 
-- `CLAUDE_MODEL=claude-haiku-4-5`, respuestas cortas (MAX_TOKENS 512), system prompt cacheado.
+- `claude-haiku-4-5` es el default del core desde v0.7.0 (antes había que fijarlo en el .env);
+  respuestas cortas (MAX_TOKENS 512), system prompt cacheado.
 - Sonnet 5 solo para casos difíciles (escalada explícita), nunca por defecto.
 - Medido 2026-09-08: ~2.100 tokens de entrada y 30-50 de salida por respuesta → ≈ USD 0,0024 por
   respuesta ≈ USD 4-5/cliente/mes a 300 conversaciones. El core ya manda `cache_control`, pero
   Haiku 4.5 solo cachea prefijos ≥ 4.096 tokens (Sonnet 5: ≥ 1.024): un agente pequeño no cachea
   (verificado: 0 creados); cuando el conocimiento crezca, la parte fija baja al 10 % sola.
 - Gemini gratis descartado (entrena con datos). Qwen local solo si algún día hay GPU.
+- **Costo registrado por agente (v0.7.0):** cada llamada a Claude guarda en `uso_api` el `usage`
+  real (entrada, salida, caché leída y escrita) y su costo en USD con `Decimal`; `GET /estado`
+  devuelve `costo_usd` (hoy y mes en hora de Bogotá, desglose llm/stt/tts). Así la mensualidad
+  se valida con el gasto real de cada cliente, no con estimaciones. Precios en
+  `agentkit/precios.py` (verificados 2026-09-25) y corregibles con `config/precios.json`.
 
 ## 4. Despliegue: VPS + Hermes cuando haya el primer cliente pago
 
