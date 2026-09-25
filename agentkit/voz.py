@@ -47,6 +47,9 @@ logger = logging.getLogger("agentkit")
 # ai.google.dev/gemini-api/docs/speech-generation.
 VOCES_OPENAI = {"alloy", "ash", "ballad", "coral", "echo", "fable", "onyx", "nova", "sage",
                 "shimmer", "verse", "marin", "cedar"}
+# gpt-audio (Chat Completions con audio). SIN VERIFICAR en la referencia de la API (2026-09-25): es
+# la lista de voces de los modelos gpt-realtime/gpt-audio que dio el revisor (sin fable/onyx/nova).
+VOCES_GPT_AUDIO = {"alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse", "marin", "cedar"}
 VOCES_GEMINI = {"Zephyr", "Puck", "Charon", "Kore", "Fenrir", "Leda", "Orus", "Aoede", "Callirrhoe",
                 "Autonoe", "Enceladus", "Iapetus", "Umbriel", "Algieba", "Despina", "Erinome",
                 "Algenib", "Rasalgethi", "Laomedeia", "Achernar", "Alnilam", "Schedar", "Gacrux",
@@ -155,6 +158,14 @@ CLAUSULA_DECIR = ("Tu única tarea es decir en voz alta, palabra por palabra, el
 
 CARACTERES_POR_SEGUNDO = 15  # habla conversacional en español (~150 palabras por minuto)
 SIMILITUD_MINIMA = 0.9  # guarda de fidelidad de gpt-audio (difflib sobre palabras normalizadas)
+SIMILITUD_MINIMA_LARGO = 0.95  # desde PALABRAS_LARGO palabras: un cambio pesa menos en la razón
+PALABRAS_LARGO = 20
+# Palabras que cambian el sentido o la fecha: deben coincidir exactas y en orden, como los números.
+# Van normalizadas (sin tildes): "sí" → "si", "mañana" → "manana".
+PALABRAS_CRITICAS = {"no", "si", "nunca", "ni", "sin", "tampoco", "jamas", "hoy", "manana", "ayer",
+                     "lunes", "martes", "miercoles", "jueves", "viernes", "sabado", "domingo"}
+# Timeout de cada llamada TTS: conexión 5 s y lectura acotada (main.py pone además un tope total).
+TIMEOUT_TTS = httpx.Timeout(30, connect=5)
 
 
 def tts_configurada() -> bool:
@@ -171,23 +182,29 @@ def texto_para_voz(texto: str) -> str:
 def _palabras(texto: str) -> list[str]:
     """Palabras normalizadas: minúsculas, sin tildes ni puntuación ni `$`, y los separadores de
     miles unidos ($3.500 → 3500)."""
-    texto = unicodedata.normalize("NFKD", texto.lower())
+    texto = unicodedata.normalize("NFKD", texto.lower())  # NFKD también pasa el espacio duro a espacio
     texto = "".join(c for c in texto if not unicodedata.combining(c))
-    texto = re.sub(r"(?<=\d)[.,](?=\d{3}(?!\d))", "", texto)
+    texto = re.sub(r"(?<=\d)[.,\s](?=\d{3}(?!\d))", "", texto)  # 30.000 / 30,000 / 30 000 → 30000
+    texto = re.sub(r"(\d)\s*([ap])\.?\s?m\b\.?", r"\1 \2m", texto)  # 5pm / 5 p. m. → 5 pm
+    texto = re.sub(r"\b([ap])\.\s?m\b\.?", r"\1m", texto)  # a. m. / a.m. sueltos → am
     return re.findall(r"\w+", texto)
 
 
 def es_fiel(pedido: str, dicho: str) -> bool:
-    """¿Lo que dijo gpt-audio (su transcript) es lo pedido? Los números (precios, placas, horas)
-    deben coincidir exactos y en orden; el resto, con similitud >= SIMILITUD_MINIMA.
+    """¿Lo que dijo gpt-audio es lo pedido? Compara la transcripción que devuelve el propio modelo,
+    NO un reconocimiento del mp3: si el audio se aparta de su transcript, la guarda no lo ve.
+    Los números (precios, placas, horas) y PALABRAS_CRITICAS deben coincidir exactos y en orden;
+    el resto, con similitud >= SIMILITUD_MINIMA (SIMILITUD_MINIMA_LARGO en textos largos).
     ponytail: un número dicho en letras ("tres mil quinientos") no coincide con "3.500" y manda al
-    respaldo: más caro, nunca un precio equivocado."""
+    respaldo (más caro). Límite conocido: un sustantivo cambiado en un texto largo (carro → moto)
+    puede pasar; subir el umbral o sumar palabras críticas si pasa en la práctica."""
     a, b = _palabras(pedido), _palabras(dicho)
 
-    def numeros(palabras):
-        return [p for p in palabras if any(c.isdigit() for c in p)]
+    def criticas(palabras):
+        return [p for p in palabras if p in PALABRAS_CRITICAS or any(c.isdigit() for c in p)]
 
-    return numeros(a) == numeros(b) and difflib.SequenceMatcher(None, a, b).ratio() >= SIMILITUD_MINIMA
+    minima = SIMILITUD_MINIMA_LARGO if len(a) >= PALABRAS_LARGO else SIMILITUD_MINIMA
+    return criticas(a) == criticas(b) and difflib.SequenceMatcher(None, a, b).ratio() >= minima
 
 
 def _cadena_tts() -> list[str]:
@@ -222,7 +239,7 @@ async def sintetizar(texto: str) -> bytes | None:
 
 
 def _voz_openai() -> str:
-    # OpenAI recomienda marin o cedar por calidad; marin es la voz de la muestra O3
+    # gpt-4o-mini-tts. OpenAI recomienda marin o cedar por calidad; marin es la voz de la muestra O3
     return _opcion("openai", ("OPENAI_TTS_VOZ", "TTS_VOZ"), "marin", VOCES_OPENAI.__contains__)
 
 
@@ -234,11 +251,14 @@ async def _sintetizar_openai_audio(texto: str, modelo: str) -> bytes | None:
     payload = {
         "model": modelo,
         "modalities": ["text", "audio"],
-        "audio": {"voice": _voz_openai(), "format": "mp3"},
+        "audio": {"voice": _opcion("openai-audio", ("OPENAI_TTS_VOZ", "TTS_VOZ"), "marin",
+                                   VOCES_GPT_AUDIO.__contains__), "format": "mp3"},
         "messages": [{"role": "system", "content": f"{instrucciones} {CLAUSULA_DECIR}".strip()},
                      {"role": "user", "content": texto}],
     }
-    async with httpx.AsyncClient(timeout=60) as client:
+    # Genera el audio completo antes de responder: la lectura crece con el texto, con tope de 45 s
+    timeout = httpx.Timeout(min(10 + len(texto) / 40, 45), connect=5)
+    async with httpx.AsyncClient(timeout=timeout) as client:
         r = await client.post(
             "https://api.openai.com/v1/chat/completions",
             headers={"Authorization": f"Bearer {os.getenv('OPENAI_API_KEY')}"},
@@ -268,7 +288,7 @@ async def _sintetizar_openai(texto: str, modelo: str) -> bytes | None:
     }
     if not modelo.startswith("tts-1"):  # tts-1 y tts-1-hd no aceptan instructions
         payload["instructions"] = os.getenv("TTS_INSTRUCCIONES", INSTRUCCIONES_FLUIDO)
-    async with httpx.AsyncClient(timeout=60) as client:
+    async with httpx.AsyncClient(timeout=TIMEOUT_TTS) as client:
         r = await client.post(
             "https://api.openai.com/v1/audio/speech",
             headers={"Authorization": f"Bearer {os.getenv('OPENAI_API_KEY')}"},
@@ -295,7 +315,7 @@ def _texto_gemini(texto: str, modelo: str) -> str:
 
 async def _sintetizar_gemini(texto: str, modelo: str) -> bytes | None:
     """Gemini TTS devuelve PCM crudo (24kHz, 16-bit, mono) — se convierte a mp3 con ffmpeg."""
-    async with httpx.AsyncClient(timeout=60) as client:
+    async with httpx.AsyncClient(timeout=TIMEOUT_TTS) as client:
         r = await client.post(
             f"https://generativelanguage.googleapis.com/v1beta/models/{modelo}:generateContent",
             headers={"x-goog-api-key": os.getenv("GEMINI_API_KEY")},

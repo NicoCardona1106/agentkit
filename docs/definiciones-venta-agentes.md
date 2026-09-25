@@ -29,9 +29,11 @@ Este documento manda sobre cualquier nota anterior; se cambia por decisión expl
 - **Costo: ~USD 0,08 por minuto de voz** (~USD 9 por cliente al mes a 500 respuestas en voz), ~5×
   el TTS barato (USD 0,015/min). **Tenerlo en cuenta en la mensualidad** de los clientes que usen
   voz. El costo real de cada respuesta queda en `uso_api` desde el `usage` de OpenAI.
-- **Guarda de fidelidad:** el modelo es conversacional y puede cambiar el texto; si lo que dijo no
-  coincide con lo pedido (números exactos, similitud ≥ 0,9), el audio se descarta y habla el
-  respaldo. Nunca sale un precio distinto al que escribió el agente.
+- **Guarda de fidelidad:** el modelo es conversacional y puede cambiar el texto. El core compara la
+  transcripción que devuelve el propio modelo (no un reconocimiento del mp3) con lo pedido: números,
+  negaciones y días deben coincidir exactos y el resto con similitud ≥ 0,9 (≥ 0,95 en textos
+  largos); si no, el audio se descarta y habla el respaldo. Reduce mucho el riesgo de un precio o
+  un «no» cambiado, pero no lo elimina (un sustantivo cambiado en un texto largo puede pasar).
 - **Respaldo automático:** `gpt-4o-mini-tts` (voz `marin`) y luego Gemini `Kore` si hay
   `GEMINI_API_KEY`; si todo falla, la respuesta sale en texto. Todo configurable sin tocar código
   (`TTS_PROVEEDOR`, `TTS_VOZ`, `TTS_INSTRUCCIONES`).

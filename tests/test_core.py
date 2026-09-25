@@ -742,6 +742,23 @@ def test_es_fiel():
     assert not voz.es_fiel("Te espero a las 5:30", "Te espero a las 5 y 30 de la tarde")
     assert not voz.es_fiel(pedido, "")
 
+    # Palabras críticas (revisión): la negación o el día cambiados no pasan aunque la similitud sea alta
+    assert not voz.es_fiel("Uy qué pena, no tenemos cupo para hoy", "Uy qué pena, tenemos cupo para hoy")
+    assert not voz.es_fiel("El parqueadero no está abierto a esa hora", "El parqueadero está abierto a esa hora")
+    assert not voz.es_fiel("Te esperamos el lunes a las 8", "Te esperamos el martes a las 8")
+    assert voz.es_fiel("Sí, claro que sí", "Si claro que si")
+    # Límite conocido: un sustantivo cambiado en un texto largo (≥ 20 palabras, umbral 0,95) pasa
+    largo = ("Claro que te ayudo con eso, la mensualidad para el carro incluye el lavado básico cada "
+             "quince días y el parqueo cubierto en el segundo piso del edificio principal")
+    assert voz.es_fiel(largo, largo.replace("carro", "moto"))
+
+    # Normalización (revisión): a. m. / p. m. y separadores de miles
+    assert voz._palabras("a las 5 p. m.") == voz._palabras("a las 5pm") == voz._palabras("a las 5 PM")
+    assert voz._palabras("abre a.m.") == voz._palabras("abre am")
+    for escrito in ("$30.000", "30,000", "30 000", "30\u00a0000"):
+        assert voz._palabras(escrito) == ["30000"], escrito
+    assert voz.es_fiel("Abrimos a las 6 a. m. y la hora vale $30.000", "Abrimos a las 6am y la hora vale 30 000")
+
 
 def test_tts_gpt_audio_payload_guarda_y_costo():
     """Default openai-audio: payload de Chat Completions como la muestra O3, costo desde usage y
@@ -816,6 +833,13 @@ def test_tts_gpt_audio_payload_guarda_y_costo():
             assert respaldo["instructions"] == voz.INSTRUCCIONES_FLUIDO
             assert [f["proveedor"] for f in filas] == ["openai-audio", "openai"]
             assert filas[0]["usd"] == "0.0552000000"  # la llamada descartada también se cobra
+
+        # Voz de gpt-4o-mini-tts que no está en VOCES_GPT_AUDIO: gpt-audio usa marin
+        os.environ["OPENAI_TTS_VOZ"] = "nova"
+        dicho[0] = texto
+        assert asyncio.run(voz.sintetizar(texto)) == b"mp3-o3"
+        assert json.loads(enviados[-1].content)["audio"]["voice"] == "marin"
+        os.environ.pop("OPENAI_TTS_VOZ")
 
         # Modelo validado: uno que no es gpt-audio se ignora (default + aviso)
         os.environ["TTS_MODELO"] = "gpt-4o-mini-tts"
@@ -895,6 +919,26 @@ async def _test_voz_fluida_solo_en_turnos_de_voz():
             os.environ.pop(var, None)
     assert llamadas == [False, True]  # instrucción de voz solo en el turno de nota de voz
     assert audios == [] and textos == ["Claro que sí, la hora está en $3.500"] * 2  # TTS caído → texto
+
+    # Voz colgada: al vencer VOZ_TIMEOUT_TOTAL sale el texto
+    async def sintetizar_lento(texto):
+        await asyncio.sleep(5)
+        return b"tarde"
+
+    textos.clear()
+    reales_voz = (brain.generar_respuesta, voz.transcribir, main_mod.proveedor, voz.sintetizar,
+                  main_mod.VOZ_TIMEOUT_TOTAL)
+    brain.generar_respuesta, voz.transcribir, main_mod.proveedor = generar, transcribir, FakeProv()
+    voz.sintetizar, main_mod.VOZ_TIMEOUT_TOTAL = sintetizar_lento, 0.05
+    os.environ.update({"OPENAI_API_KEY": "sk-test", "PUBLIC_URL": "https://agente.test", "HUMANIZAR": "false"})
+    try:
+        await main_mod.procesar_mensaje(MensajeEntrante(telefono=tel, texto="", mensaje_id="t3", audio_ref="m2"))
+    finally:
+        (brain.generar_respuesta, voz.transcribir, main_mod.proveedor, voz.sintetizar,
+         main_mod.VOZ_TIMEOUT_TOTAL) = reales_voz
+        for var in ("OPENAI_API_KEY", "PUBLIC_URL", "HUMANIZAR"):
+            os.environ.pop(var, None)
+    assert audios == [] and textos == ["Claro que sí, la hora está en $3.500"]
 
 
 def test_voz_fluida_solo_en_turnos_de_voz():

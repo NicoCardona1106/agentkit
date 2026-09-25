@@ -240,8 +240,9 @@ PREGUNTA 13 (opcional): ¿Quieres que el agente entienda notas de voz?
               negocio sin tocar código; el core le agrega siempre «di palabra
               por palabra el mensaje, no agregues ni quites nada».
             - Respaldo automático: si gpt-audio falla o cambia el texto (la
-              guarda compara lo que dijo con lo que debía decir; los números
-              deben coincidir exactos), habla gpt-4o-mini-tts (voz marin) y
+              guarda compara la transcripción que devuelve el modelo, no el
+              mp3; números, negaciones y días deben coincidir exactos), habla
+              gpt-4o-mini-tts (voz marin) y
               luego Gemini Kore si hay GEMINI_API_KEY. Gemini es opcional; si
               la pide, que sea de un proyecto con FACTURACIÓN ACTIVA (el tier
               gratis puede entrenar con los datos: choca con la Ley 1581) y

@@ -31,6 +31,9 @@ proveedor = obtener_proveedor()
 # Dedup de webhooks reenviados (Meta/Twilio reintentan si no respondemos rápido)
 _procesados: deque[str] = deque(maxlen=500)
 
+# Tope total de la respuesta en voz (proveedor principal + respaldos): si vence, sale el texto
+VOZ_TIMEOUT_TOTAL = float(os.getenv("VOZ_TIMEOUT_TOTAL", "45"))
+
 # Audios TTS generados, servidos en /audio/{id} para que el proveedor los descargue
 # ponytail: en memoria con tope de 50 — si algún día hay varios workers, pasar a storage compartido
 _audios: dict[str, bytes] = {}
@@ -103,7 +106,8 @@ async def procesar_mensaje(msg: MensajeEntrante):
         # Si el cliente habló, el agente responde con voz (requiere TTS y PUBLIC_URL); el cerebro
         # lo sabe para escribir frases de corrido que suenen naturales.
         public_url = os.getenv("PUBLIC_URL", "").rstrip("/")
-        en_voz = bool(msg.audio_ref and public_url and voz.tts_configurada())
+        # En MODO_BORRADOR la respuesta va al admin como texto: sin voz ni instrucción de voz
+        en_voz = bool(msg.audio_ref and public_url and voz.tts_configurada() and not borrador.activo())
 
         historial = await memory.obtener_historial(msg.telefono)
         respuesta = await brain.generar_respuesta(msg.telefono, texto, historial, proveedor, en_voz=en_voz)
@@ -126,7 +130,8 @@ async def procesar_mensaje(msg: MensajeEntrante):
         respondido_en_voz = False
         if en_voz:
             try:  # un fallo de voz nunca se lleva la respuesta de texto
-                audio_out = await voz.sintetizar(voz.texto_para_voz(respuesta))
+                audio_out = await asyncio.wait_for(voz.sintetizar(voz.texto_para_voz(respuesta)),
+                                                   timeout=VOZ_TIMEOUT_TOTAL)
                 if audio_out:
                     aid = _guardar_audio(audio_out)
                     respondido_en_voz = await proveedor.enviar_audio_url(

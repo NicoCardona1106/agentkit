@@ -120,6 +120,16 @@ agentes con `pip install --upgrade`.
 - La voz es femenina: la entrevista (CLAUDE.md, preguntas 4 y 13) pide un personaje femenino.
 - Pruebas: `pytest -q` → 21 (payload de la muestra O3, guarda, costo desde usage, cadena de
   respaldo, texto aunque todo el TTS falle, instrucción de voz solo en turnos de voz).
+- Revisión:
+  - Timeouts: `gpt-audio` con lectura de 10 s + 1 s por cada 40 caracteres (tope 45 s) y
+    conexión 5 s; los respaldos, 30 s y 5 s; y `VOZ_TIMEOUT_TOTAL` (45 s) en `main.py` para toda
+    la cadena: si vence, sale el texto (antes la espera encadenada podía llegar a ~180 s).
+  - Guarda: además de los números, las palabras críticas (no, sí, nunca, ni, sin, tampoco,
+    jamás, hoy, mañana, ayer, días de la semana) deben coincidir exactas y en orden; umbral 0,95
+    desde 20 palabras; se unifican `a. m.`/`p. m.` y los miles `30.000`/`30,000`/`30 000`. La
+    guarda compara la transcripción que devuelve el modelo, no un reconocimiento del mp3.
+  - `VOCES_GPT_AUDIO` propio para `gpt-audio` (lista sin verificar en la referencia de la API).
+  - En `MODO_BORRADOR` no se responde en voz ni se pide texto de voz.
 
 ## Pendientes conocidos
 
@@ -134,3 +144,7 @@ agentes con `pip install --upgrade`.
 - Voz O3: medir con la API real cuántos audios descarta la guarda (sobre todo si `gpt-audio`
   escribe los números en letras en su transcript: hoy eso manda al respaldo) y el costo real por
   minuto en `uso_api`.
+- Voz O3: una llamada a `gpt-audio` que vence por timeout (o que corta `VOZ_TIMEOUT_TOTAL`) puede
+  haberse cobrado en OpenAI sin dejar fila en `uso_api` (no llegó el `usage`). Si pasa seguido, el
+  costo real quedará por encima del registrado.
+- Voz O3: confirmar `VOCES_GPT_AUDIO` en la referencia de Chat Completions de OpenAI.

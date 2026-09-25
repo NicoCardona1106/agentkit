@@ -122,13 +122,21 @@ sienta humano en todo momento, calidad antes que precio.
   respuestas en voz). Es ~5 veces el TTS barato: tenerlo en cuenta al cotizar.
 - **Guarda de fidelidad:** `gpt-audio` es conversacional y puede cambiar el
   texto (en la prueba, la variante mini se inventó respuestas). El core compara
-  lo que dijo (su transcript) con lo que debía decir, sin mirar puntuación,
-  tildes, `$` ni puntos de miles. Si un número (precio, placa, hora) no coincide
-  o el texto cambia (similitud < 0,9), descarta ese audio y usa el respaldo.
+  la **transcripción que devuelve el propio modelo** con lo que debía decir (no
+  reconoce el mp3: si el audio se apartara de esa transcripción, no lo vería),
+  sin mirar puntuación, tildes ni `$`, y unificando miles (`30.000`, `30,000`,
+  `30 000`) y `a. m.`/`p. m.`. Los números (precio, placa, hora) y las palabras
+  críticas (`no`, `sí`, `nunca`, `ni`, `sin`, `tampoco`, `jamás`, `hoy`,
+  `mañana`, `ayer` y los días de la semana) deben coincidir exactos y en orden;
+  el resto, con similitud ≥ 0,9 (≥ 0,95 desde 20 palabras). Si no, descarta ese
+  audio y usa el respaldo. Límite: un sustantivo cambiado en un texto largo
+  (carro → moto) puede pasar.
 - **Respaldo automático:** si `gpt-audio` falla o no pasa la guarda, habla
   `gpt-4o-mini-tts` (voz `marin`, misma `OPENAI_API_KEY`) y, si también falla,
   Gemini `gemini-2.5-flash-preview-tts` voz `Kore` (si hay `GEMINI_API_KEY`).
-  Si todo falla, la respuesta sale en texto.
+  Si todo falla, o si la voz no está lista en `VOZ_TIMEOUT_TOTAL` segundos
+  (default 45; cada llamada tiene además su propio timeout), la respuesta sale
+  en texto.
 - **Voz femenina:** el personaje del agente debe ser femenino (nombre y forma
   de hablar), para que la voz y el texto no se contradigan.
 - **Texto fluido:** cuando el cliente manda nota de voz, el cerebro recibe una
@@ -147,7 +155,8 @@ Todo se cambia en el `.env` y se aplica al reiniciar el agente:
 | `GEMINI_API_KEY` | — | Último respaldo de la voz de salida (Gemini, requiere `ffmpeg` instalado para pasar a mp3). Key con facturación activa |
 | `TTS_PROVEEDOR` | `openai-audio` | Proveedor principal: `openai-audio` (`gpt-audio-1.5`), `openai` (`gpt-4o-mini-tts`) o `gemini`. Si falla, siguen los respaldos `openai` y `gemini` que tengan key (`gpt-audio` nunca es respaldo: forzar otro sirve para no pagarlo) |
 | `OPENAI_AUDIO_MODELO` | `gpt-audio-1.5` | Modelo conversacional de voz; solo acepta `gpt-audio*` (gana sobre `TTS_MODELO`) |
-| `TTS_VOZ` | `marin` (OpenAI) / `Kore` (Gemini) | Voz de salida. Gemini: `Kore`, `Puck`, `Zephyr`, `Aoede`… (30 voces). OpenAI: `alloy`, `ash`, `ballad`, `coral`, `echo`, `fable`, `onyx`, `nova`, `sage`, `shimmer`, `verse`, `marin`, `cedar` |
+| `TTS_VOZ` | `marin` (OpenAI) / `Kore` (Gemini) | Voz de salida. `gpt-audio`: `alloy`, `ash`, `ballad`, `coral`, `echo`, `sage`, `shimmer`, `verse`, `marin`, `cedar` (lista sin verificar en la referencia de la API). `gpt-4o-mini-tts`: esas más `fable`, `onyx`, `nova`. Gemini: `Kore`, `Puck`, `Zephyr`, `Aoede`… (30 voces). Una voz que no sirve para el modelo se ignora (default + aviso) |
+| `VOZ_TIMEOUT_TOTAL` | `45` | Segundos máximos para tener la nota de voz (principal + respaldos); si vence, la respuesta sale en texto |
 | `GEMINI_TTS_VOZ` / `OPENAI_TTS_VOZ` | — | Voz solo para ese proveedor (`OPENAI_TTS_VOZ` vale para `gpt-audio` y `gpt-4o-mini-tts`); gana sobre `TTS_VOZ` |
 | `TTS_INSTRUCCIONES` | OpenAI: el estilo «fluido» de la muestra O3 (español de Colombia, cálido y cercano, de corrido, sin pausas largas, nada de locutor ni robot). Gemini: el estilo de su muestra Kore | Cómo habla: tono, acento, ritmo. Texto libre, p. ej. `TTS_INSTRUCCIONES="Habla como una recepcionista paisa, alegre y sin afanes"`. `gpt-audio` la recibe en el mensaje system seguida de una cláusula fija («di palabra por palabra el mensaje del usuario, no agregues ni quites nada»); `gpt-4o-mini-tts` en su campo `instructions`; Gemini no tiene ese campo y la recibe **antepuesta al texto**: `instrucciones`, una línea en blanco y el texto |
 | `TTS_MODELO` | `gpt-audio-1.5` / `gpt-4o-mini-tts` / `gemini-2.5-flash-preview-tts` | Modelo de voz de salida; cada proveedor ignora el que no es suyo. `gemini-3.8-flash-tts` es el sucesor si el preview se retira, pero lee el texto literal (leería las instrucciones) y devuelve WAV: no cambiarlo sin adaptar el core y repetir la prueba de oído |
