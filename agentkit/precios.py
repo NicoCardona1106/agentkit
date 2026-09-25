@@ -24,12 +24,23 @@ MILLON = Decimal(1_000_000)
 
 # LLM: USD por millón de tokens. cache_escritura es la de 5 minutos (la que usa brain.py).
 # Audio (STT y TTS): USD por "minuto" (o por "hora") de audio; minimo_segundos = lo mínimo
-# que factura el proveedor por llamada. El modelo con fecha (claude-haiku-4-5-20251001) usa
-# el precio de su alias por prefijo.
+# que factura el proveedor por llamada. El prefijo más largo gana: claude-haiku-4-5-20251001 usa
+# el precio de claude-haiku-4-5, y claude-opus-4-20250514 el de claude-opus-4.
+_CLAUDE_5_25 = {"entrada": "5", "salida": "25", "cache_lectura": "0.50", "cache_escritura": "6.25"}
 PRECIOS: dict[str, dict[str, str]] = {
     # Anthropic
     "claude-haiku-4-5": {"entrada": "1", "salida": "5", "cache_lectura": "0.10", "cache_escritura": "1.25"},
     "claude-sonnet-5": {"entrada": "2", "salida": "10", "cache_lectura": "0.20", "cache_escritura": "2.50"},
+    # Sonnet 4, 4.5 y 4.6 (claude-sonnet-4-20250514, -4-5-20250929, -4-6)
+    "claude-sonnet-4": {"entrada": "3", "salida": "15", "cache_lectura": "0.30", "cache_escritura": "3.75"},
+    # Opus 4 y 4.1 (claude-opus-4-20250514, claude-opus-4-1-20250805)
+    "claude-opus-4": {"entrada": "15", "salida": "75", "cache_lectura": "1.50", "cache_escritura": "18.75"},
+    "claude-opus-4-5": _CLAUDE_5_25,
+    "claude-opus-4-6": _CLAUDE_5_25,
+    "claude-opus-4-7": _CLAUDE_5_25,
+    "claude-opus-4-8": _CLAUDE_5_25,
+    "claude-opus-5": _CLAUDE_5_25,
+    "claude-opus-5-5": {"entrada": "4", "salida": "20", "cache_lectura": "0.20", "cache_escritura": "5"},
     # STT — OpenAI publica el costo estimado por minuto
     "gpt-4o-mini-transcribe": {"minuto": "0.003"},
     "whisper-1": {"minuto": "0.006"},
@@ -47,19 +58,48 @@ PRECIOS: dict[str, dict[str, str]] = {
 }
 
 
+_override_cache: dict[tuple[str, float], dict] = {}  # (ruta, mtime) → contenido de precios.json
+_sin_precio_avisados: set[str] = set()
+
+
+def _override() -> dict:
+    """precios.json opcional, leído una sola vez por versión del archivo (ruta + mtime).
+    Si está mal formado se loguea y se sigue con la tabla interna."""
+    ruta = os.getenv("PRECIOS_ARCHIVO", "config/precios.json")
+    try:
+        clave = (ruta, os.path.getmtime(ruta))
+    except OSError:
+        return {}  # no existe: solo la tabla interna
+    if clave not in _override_cache:
+        try:
+            with open(ruta, "r", encoding="utf-8") as f:
+                datos = json.load(f)
+            if not isinstance(datos, dict) or not all(isinstance(p, dict) for p in datos.values()):
+                raise ValueError('se esperaba {"modelo": {"campo": "precio"}}')
+        except (OSError, ValueError) as e:
+            logger.error(f"{ruta} inválido, se usa la tabla interna de precios: {e}")
+            datos = {}
+        _override_cache.clear()
+        _override_cache[clave] = datos
+    return _override_cache[clave]
+
+
 def _precio(modelo: str) -> dict | None:
     """Precio del modelo (tabla + override opcional). El prefijo más largo gana."""
     tabla = {m: dict(p) for m, p in PRECIOS.items()}
-    ruta = os.getenv("PRECIOS_ARCHIVO", "config/precios.json")
-    if os.path.exists(ruta):
-        with open(ruta, "r", encoding="utf-8") as f:
-            for m, p in json.load(f).items():
-                tabla.setdefault(m, {}).update(p)
+    for m, p in _override().items():
+        tabla.setdefault(m, {}).update(p)
     for clave in sorted(tabla, key=len, reverse=True):
         if modelo.startswith(clave):
             return tabla[clave]
-    logger.warning(f"Sin precio para el modelo {modelo}: se registra con costo 0")
+    if modelo not in _sin_precio_avisados:  # un aviso por modelo y proceso
+        _sin_precio_avisados.add(modelo)
+        logger.warning(f"Sin precio para el modelo {modelo}: se registra con costo 0")
     return None
+
+
+def tiene_precio(modelo: str) -> bool:
+    return _precio(modelo) is not None
 
 
 def _d(valor) -> Decimal:
@@ -104,6 +144,7 @@ async def registrar(tipo: str, proveedor: str, modelo: str, *, usage=None,
         else:
             fila["segundos_audio"] = float(segundos_audio or 0)  # medida, no dinero
             usd = costo_audio(modelo, segundos_audio or 0)
-        await memory.registrar_uso(**fila, usd=str(usd))
+        # 10 decimales en notación fija ("0.0000021000"), nunca "2.1E-6"
+        await memory.registrar_uso(**fila, usd=format(usd.quantize(Decimal("0.0000000001")), "f"))
     except Exception as e:
         logger.error(f"No se pudo registrar el costo ({tipo} {modelo}): {e}")

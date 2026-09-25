@@ -81,7 +81,10 @@ y la configuración del webhook en Meta o Twilio).
   panel externo (versión, proveedor, modelo, uptime, modo borrador, cifras
   de las últimas 24h, tickets abiertos, borradores pendientes, errores y
   `costo_usd`: gasto en APIs de hoy y del mes en hora de Bogotá, con desglose
-  del mes en `llm`/`stt`/`tts`; montos como texto decimal, p. ej. `"0.012345"`).
+  del mes en `llm`/`stt`/`tts`, montos como texto decimal, p. ej. `"0.012345"`,
+  y `modelos_sin_precio`: modelos usados este mes que se registraron con costo 0
+  porque no tienen precio en la tabla — el panel debe marcarlos. Si el cálculo
+  del costo falla, `costo_usd` llega en `null` y el resto del estado sale igual).
   Nunca expone teléfonos ni el contenido de los mensajes. Recomendado para
   paneles: manda el token por cabecera `X-Reporte-Token` en vez de `?token=`,
   así no queda en los access logs.
@@ -91,7 +94,14 @@ Ambos comparten `REPORTE_TOKEN`: sin token o con uno incorrecto, 403.
 Cada llamada a Claude, a la transcripción y a la voz queda en la tabla
 `uso_api` con su costo en USD (precios en `agentkit/precios.py`; para
 corregir uno sin tocar código, crea `config/precios.json`, p. ej.
-`{"claude-haiku-4-5": {"salida": "5"}}`, o apunta `PRECIOS_ARCHIVO` a otro JSON).
+`{"claude-haiku-4-5": {"salida": "5"}}`, o apunta `PRECIOS_ARCHIVO` a otro JSON;
+si el JSON está mal formado se registra el error en el log y se usa la tabla interna).
+
+**El costo de la voz de salida es estimado**, no exacto: el precio por minuto de
+`gpt-4o-mini-tts` (USD 0,015) no está verificado — OpenAI hoy lo publica por
+tokens de audio — y la duración se estima por caracteres (~15 por segundo).
+El de Claude sí sale del `usage` real, y el de la transcripción de la duración
+real de la nota de voz (OGG de WhatsApp; otros formatos se estiman por tamaño).
 
 ## Voz del agente (sin tocar código)
 
@@ -100,7 +110,10 @@ Todo se cambia en el `.env` y se aplica al reiniciar el agente:
 | Variable | Default | Para qué |
 |----------|---------|----------|
 | `OPENAI_API_KEY` | — | Activa la voz: entiende notas de voz (`gpt-4o-mini-transcribe`) y responde en voz (`gpt-4o-mini-tts`, mp3) |
-| `TTS_VOZ` | `marin` | Voz de salida. Válidas: `alloy`, `ash`, `ballad`, `coral`, `echo`, `fable`, `onyx`, `nova`, `sage`, `shimmer`, `verse`, `marin`, `cedar` (en prueba de oído: `marin`, `coral`, `cedar`) |
+| `TTS_VOZ` | `marin` (OpenAI) / `Kore` (Gemini) | Voz de salida. OpenAI: `alloy`, `ash`, `ballad`, `coral`, `echo`, `fable`, `onyx`, `nova`, `sage`, `shimmer`, `verse`, `marin`, `cedar` (en prueba de oído: `marin`, `coral`, `cedar`). Gemini: `Kore`, `Puck`, `Zephyr`… |
+| `OPENAI_TTS_VOZ` / `GEMINI_TTS_VOZ` | — | Voz solo para ese proveedor; gana sobre `TTS_VOZ` (útil para dejar lista la voz del respaldo) |
+| `TTS_MODELO` | `gpt-4o-mini-tts` (OpenAI) / `gemini-2.5-flash-preview-tts` (Gemini) | Modelo de voz de salida |
+| `VOZ_MODELO` | `gpt-4o-mini-transcribe` (OpenAI) / `whisper-large-v3` (Groq) | Modelo de transcripción |
 | `TTS_INSTRUCCIONES` | español de Colombia, cálido y conversacional, ritmo natural, nada de locutor ni robot | Cómo habla: tono, acento, ritmo. Texto libre, p. ej. `TTS_INSTRUCCIONES="Habla como una recepcionista paisa, alegre y sin afanes"` |
 | `TTS_PROVEEDOR` | `openai` | `gemini` solo como respaldo (`GEMINI_API_KEY`, requiere ffmpeg) |
 | `STT_PROVEEDOR` | `openai` | `groq` para transcribir gratis con `GROQ_API_KEY` |
@@ -108,6 +121,21 @@ Todo se cambia en el `.env` y se aplica al reiniciar el agente:
 Para que responda en voz también hace falta `PUBLIC_URL` (el proveedor
 descarga el audio desde `/audio/{id}`). Si el cliente escribe, el agente
 responde por texto; si manda nota de voz, responde con nota de voz.
+
+- Cada proveedor valida el modelo y la voz que recibe: si el valor es de otro
+  proveedor (p. ej. `TTS_VOZ=Kore` con OpenAI), lo ignora, usa su default y lo
+  avisa una vez en el log.
+- Forzar un proveedor (`TTS_PROVEEDOR` / `STT_PROVEEDOR`) sin su key deja al
+  agente **sin esa voz**: no cae al otro proveedor.
+
+### Actualizar un agente a v0.7.0
+
+Antes Groq y Gemini eran lo recomendado; ahora la voz va por OpenAI y el modelo
+por defecto es Haiku 4.5. En el `.env` del agente conviene **borrar**:
+`VOZ_MODELO=whisper-large-v3`, `TTS_MODELO=gemini-…`, `TTS_VOZ=Kore` (o `nova`)
+y `CLAUDE_MODEL=claude-sonnet-5` (salvo que ese agente necesite Sonnet). Si se
+quedan no rompen nada — se ignoran con un aviso —, pero confunden. `GROQ_API_KEY`
+y `GEMINI_API_KEY` pueden quedarse como respaldo.
 
 ## Stack
 

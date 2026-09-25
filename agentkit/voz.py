@@ -3,16 +3,17 @@
 # Entrada (audio → texto):
 #   - OPENAI_API_KEY → OpenAI gpt-4o-mini-transcribe (~USD 0,003/min) — por defecto si hay key
 #   - GROQ_API_KEY   → Groq whisper-large-v3 (capa gratis) — si no hay key de OpenAI
-#   STT_PROVEEDOR=openai|groq fuerza uno (y solo ese). VOZ_MODELO cambia el modelo.
+#   STT_PROVEEDOR=openai|groq fuerza uno (y solo ese; sin su key, el agente queda sin STT).
+#   VOZ_MODELO cambia el modelo.
 # Salida (texto → audio, siempre mp3). Decisión 2026-09-25: OpenAI gpt-4o-mini-tts; Gemini
 # queda solo como respaldo si no hay OPENAI_API_KEY. TTS_PROVEEDOR=openai|gemini fuerza uno.
-#   - openai → gpt-4o-mini-tts, mp3 directo. TTS_VOZ (default marin; en prueba de oído contra
-#     coral y cedar) y TTS_INSTRUCCIONES (tono, acento y ritmo; default en INSTRUCCIONES_DEFAULT).
-#     Voces válidas en /v1/audio/speech (verificado 2026-09-25): alloy, ash, ballad, coral, echo,
-#     fable, onyx, nova, sage, shimmer, verse, marin, cedar.
+#   - openai → gpt-4o-mini-tts, mp3 directo. OPENAI_TTS_VOZ o TTS_VOZ (default marin; en prueba
+#     de oído contra coral y cedar) y TTS_INSTRUCCIONES (tono, acento y ritmo).
 #   - gemini → Gemini TTS (capa gratis en AI Studio; devuelve PCM, requiere ffmpeg para mp3).
-#     TTS_VOZ default Kore.
-#   TTS_MODELO cambia el modelo del proveedor elegido.
+#     GEMINI_TTS_VOZ o TTS_VOZ (default Kore).
+#   TTS_MODELO cambia el modelo. Forzar un proveedor sin su key deja al agente sin voz de salida.
+# Cada proveedor valida modelo y voz: si un valor es de otro proveedor (un .env viejo con
+# VOZ_MODELO=whisper-large-v3 o TTS_VOZ=Kore al pasar a OpenAI), usa su default y avisa una vez.
 #   Otro proveedor (deepgram, elevenlabs…): escribir _sintetizar_<nombre>(texto, modelo) → mp3
 #   y agregarlo a _TTS al final del archivo, con su variable de key y su modelo por defecto.
 # Cada llamada exitosa queda registrada con su costo en uso_api (ver precios.py).
@@ -30,11 +31,42 @@ from agentkit import precios
 
 logger = logging.getLogger("agentkit")
 
-# proveedor → (variable de la key, url, modelo por defecto). El orden es la prioridad.
+# Voces válidas verificadas el 2026-09-25 en la referencia de /v1/audio/speech de OpenAI y en
+# ai.google.dev/gemini-api/docs/speech-generation.
+VOCES_OPENAI = {"alloy", "ash", "ballad", "coral", "echo", "fable", "onyx", "nova", "sage",
+                "shimmer", "verse", "marin", "cedar"}
+VOCES_GEMINI = {"Zephyr", "Puck", "Charon", "Kore", "Fenrir", "Leda", "Orus", "Aoede", "Callirrhoe",
+                "Autonoe", "Enceladus", "Iapetus", "Umbriel", "Algieba", "Despina", "Erinome",
+                "Algenib", "Rasalgethi", "Laomedeia", "Achernar", "Alnilam", "Schedar", "Gacrux",
+                "Pulcherrima", "Achird", "Zubenelgenubi", "Vindemiatrix", "Sadachbia", "Sadaltager",
+                "Sulafat"}
+
+# proveedor → (variable de la key, url, modelo por defecto, ¿el modelo es de este proveedor?).
+# El orden es la prioridad.
 _STT = {
-    "openai": ("OPENAI_API_KEY", "https://api.openai.com/v1/audio/transcriptions", "gpt-4o-mini-transcribe"),
-    "groq": ("GROQ_API_KEY", "https://api.groq.com/openai/v1/audio/transcriptions", "whisper-large-v3"),
+    "openai": ("OPENAI_API_KEY", "https://api.openai.com/v1/audio/transcriptions", "gpt-4o-mini-transcribe",
+               lambda m: m.startswith("gpt-") or m == "whisper-1"),
+    "groq": ("GROQ_API_KEY", "https://api.groq.com/openai/v1/audio/transcriptions", "whisper-large-v3",
+             lambda m: m.startswith(("whisper-large", "distil-whisper"))),
 }
+
+_avisados: set[str] = set()
+
+
+def _opcion(proveedor: str, variables: tuple[str, ...], default: str, valido) -> str:
+    """Primer valor definido en `variables` que sirva para el proveedor; si no hay, su default.
+    Un valor de otro proveedor se ignora con un warning (una sola vez por proceso)."""
+    for variable in variables:
+        valor = os.getenv(variable)
+        if not valor:
+            continue
+        if valido(valor):
+            return valor
+        aviso = f"{variable}={valor} no sirve para {proveedor}: se ignora (default {default})"
+        if aviso not in _avisados:
+            _avisados.add(aviso)
+            logger.warning(aviso)
+    return default
 
 
 def _elegir(tabla: dict, variable: str) -> str | None:
@@ -51,8 +83,8 @@ def _config() -> tuple[str, str, str, str] | None:
     nombre = _elegir(_STT, "STT_PROVEEDOR")
     if not nombre:
         return None
-    variable, url, modelo = _STT[nombre]
-    return nombre, url, os.getenv(variable), os.getenv("VOZ_MODELO", modelo)
+    variable, url, modelo, valido = _STT[nombre]
+    return nombre, url, os.getenv(variable), _opcion(nombre, ("VOZ_MODELO",), modelo, valido)
 
 
 def voz_configurada() -> bool:
@@ -118,8 +150,8 @@ async def sintetizar(texto: str) -> bytes | None:
     proveedor = _elegir(_TTS, "TTS_PROVEEDOR")
     if not proveedor:
         return None
-    _, funcion, modelo_default = _TTS[proveedor]
-    modelo = os.getenv("TTS_MODELO", modelo_default)
+    _, funcion, modelo_default, valido = _TTS[proveedor]
+    modelo = _opcion(proveedor, ("TTS_MODELO",), modelo_default, valido)
     audio = await funcion(texto, modelo)
     if audio:
         # ponytail: duración ESTIMADA por caracteres; la exacta pediría decodificar el mp3
@@ -131,7 +163,8 @@ async def sintetizar(texto: str) -> bytes | None:
 async def _sintetizar_openai(texto: str, modelo: str) -> bytes | None:
     payload = {
         "model": modelo,
-        "voice": os.getenv("TTS_VOZ", "marin"),  # OpenAI recomienda marin o cedar por calidad
+        # OpenAI recomienda marin o cedar por calidad
+        "voice": _opcion("openai", ("OPENAI_TTS_VOZ", "TTS_VOZ"), "marin", VOCES_OPENAI.__contains__),
         "input": texto,
         "response_format": "mp3",
     }
@@ -160,7 +193,8 @@ async def _sintetizar_gemini(texto: str, modelo: str) -> bytes | None:
                 "generationConfig": {
                     "responseModalities": ["AUDIO"],
                     "speechConfig": {"voiceConfig": {"prebuiltVoiceConfig": {
-                        "voiceName": os.getenv("TTS_VOZ", "Kore")}}},
+                        "voiceName": _opcion("gemini", ("GEMINI_TTS_VOZ", "TTS_VOZ"), "Kore",
+                                             VOCES_GEMINI.__contains__)}}},
                 },
             },
         )
@@ -191,8 +225,10 @@ async def _pcm_a_mp3(pcm: bytes) -> bytes | None:
     return mp3 if proc.returncode == 0 and mp3 else None
 
 
-# proveedor → (variable de la key, función texto→mp3, modelo por defecto). El orden es la prioridad.
+# proveedor → (variable de la key, función texto→mp3, modelo por defecto, ¿el modelo es suyo?).
+# El orden es la prioridad.
 _TTS = {
-    "openai": ("OPENAI_API_KEY", _sintetizar_openai, "gpt-4o-mini-tts"),
-    "gemini": ("GEMINI_API_KEY", _sintetizar_gemini, "gemini-2.5-flash-preview-tts"),
+    "openai": ("OPENAI_API_KEY", _sintetizar_openai, "gpt-4o-mini-tts", lambda m: m.startswith(("gpt-", "tts-"))),
+    "gemini": ("GEMINI_API_KEY", _sintetizar_gemini, "gemini-2.5-flash-preview-tts",
+               lambda m: m.startswith("gemini-")),
 }

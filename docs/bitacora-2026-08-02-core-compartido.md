@@ -89,7 +89,11 @@ agentes con `pip install --upgrade`.
   override en `config/precios.json`. Todo con `Decimal`; un fallo al registrar solo se loguea.
   `GET /estado` agrega `costo_usd {hoy, mes, desglose}` (hora de Bogotá) sin tocar los campos previos.
 - **Dependencias:** `sqlalchemy[asyncio]` (trae greenlet; un venv limpio fallaba sin él).
-- Pruebas: `pytest -q` → 15 pruebas sin red ni APIs reales (y `python tests/test_core.py` corre además los self-checks async).
+- Revisión: cada proveedor de voz valida modelo y voz (un .env viejo con Groq/Gemini sigue
+  funcionando con OpenAI; `OPENAI_TTS_VOZ`/`GEMINI_TTS_VOZ` ganan sobre `TTS_VOZ`); precios de
+  Sonnet 4.x y Opus 4.x/5.x; `usd` con 10 decimales fijos; `precios.json` en caché y tolerante a
+  errores; `costo_usd.modelos_sin_precio` y `costo_usd: null` si el cálculo falla.
+- Pruebas: `pytest -q` → 18 pruebas sin red ni APIs reales (y `python tests/test_core.py` corre además los self-checks async).
 
 ## Pendientes conocidos
 

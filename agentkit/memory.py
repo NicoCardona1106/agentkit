@@ -283,27 +283,30 @@ async def registrar_uso(**campos):
 
 
 async def resumen_costos() -> dict:
-    """Costo en USD de hoy y del mes en curso (días de Bogotá) y desglose del mes por tipo.
+    """Costo en USD de hoy y del mes en curso (días de Bogotá), desglose del mes por tipo y los
+    modelos usados este mes que no tienen precio (se registraron con costo 0).
     Los valores van como texto decimal (6 decimales) para que ningún float toque el dinero."""
+    from agentkit import precios  # aquí y no arriba: precios importa memory
     hoy = datetime.now(BOGOTA).replace(hour=0, minute=0, second=0, microsecond=0)
     desde_hoy = hoy.astimezone(timezone.utc).replace(tzinfo=None)  # creado_en se guarda en UTC naive
     desde_mes = hoy.replace(day=1).astimezone(timezone.utc).replace(tzinfo=None)
     # ponytail: suma en Python con Decimal; un mes de un agente son miles de filas, no millones
     async with async_session() as session:
-        filas = (await session.execute(select(UsoApi.tipo, UsoApi.usd, UsoApi.creado_en).where(
+        filas = (await session.execute(select(UsoApi.tipo, UsoApi.usd, UsoApi.creado_en, UsoApi.modelo).where(
             UsoApi.creado_en >= desde_mes))).all()
     total_hoy = Decimal(0)
     desglose = {"llm": Decimal(0), "stt": Decimal(0), "tts": Decimal(0)}
-    for tipo, usd, creado in filas:
+    for tipo, usd, creado, _ in filas:
         desglose[tipo] = desglose.get(tipo, Decimal(0)) + Decimal(usd)
         if creado >= desde_hoy:
             total_hoy += Decimal(usd)
 
     def texto(d: Decimal) -> str:
-        return str(d.quantize(Decimal("0.000001")))
+        return format(d.quantize(Decimal("0.000001")), "f")
 
     return {
         "hoy": texto(total_hoy),
         "mes": texto(sum(desglose.values(), Decimal(0))),
         "desglose": {t: texto(v) for t, v in desglose.items()},
+        "modelos_sin_precio": sorted({m for *_, m in filas if not precios.tiene_precio(m)}),
     }

@@ -338,6 +338,172 @@ def test_precios_decimal():
         os.remove(ruta)
 
 
+class _Captura:
+    """Captura los logs del logger "agentkit" de nivel >= `nivel` mientras dura el bloque with."""
+    def __init__(self, nivel):
+        import logging
+        self.handler = logging.Handler(nivel)
+        self.handler.emit = lambda r: self.registros.append(r.getMessage())
+        self.registros = []
+
+    def __enter__(self):
+        import logging
+        logging.getLogger("agentkit").addHandler(self.handler)
+        return self.registros
+
+    def __exit__(self, *exc):
+        import logging
+        logging.getLogger("agentkit").removeHandler(self.handler)
+
+
+def test_precios_modelos_claude_y_json_malo():
+    """Sonnet 4.x / Opus 4.x-5.x con precio (el prefijo más largo gana) y un precios.json roto
+    se loguea y deja la tabla interna; usd se guarda con 10 decimales fijos."""
+    import logging
+    from decimal import Decimal
+
+    from agentkit import precios
+
+    M = 1_000_000
+    assert precios.costo_llm("claude-sonnet-4-5-20250929", M, 0) == Decimal("3")
+    assert precios.costo_llm("claude-sonnet-4-20250514", 0, M) == Decimal("15")
+    assert precios.costo_llm("claude-opus-4-1-20250805", M, 0) == Decimal("15")
+    assert precios.costo_llm("claude-opus-4-5-20251101", M, 0) == Decimal("5")
+    assert precios.costo_llm("claude-opus-4-8", 0, 0, M, 0) == Decimal("0.50")
+    assert precios.costo_llm("claude-opus-5", 0, M) == Decimal("25")
+    assert precios.costo_llm("claude-opus-5-5", M, 0, 0, M) == Decimal("9")  # 4 entrada + 5 escritura
+    assert precios.tiene_precio("claude-haiku-4-5") and not precios.tiene_precio("modelo-raro")
+
+    ruta = os.path.join(tempfile.gettempdir(), "agentkit_precios_roto.json")
+    with open(ruta, "w", encoding="utf-8") as f:
+        f.write("{esto no es json")
+    os.environ["PRECIOS_ARCHIVO"] = ruta
+    try:
+        with _Captura(logging.ERROR) as errores:
+            assert precios.costo_llm("claude-haiku-4-5", M, 0) == Decimal("1")  # tabla interna
+            assert precios.costo_llm("claude-haiku-4-5", M, 0) == Decimal("1")
+        assert len(errores) == 1 and "inválido" in errores[0]  # leído una vez (caché por mtime)
+    finally:
+        os.environ.pop("PRECIOS_ARCHIVO")
+        os.remove(ruta)
+
+    filas = []
+
+    async def capturar(**campos):
+        filas.append(campos)
+
+    class Uso:
+        input_tokens, output_tokens = 1, 0
+
+    from agentkit import memory
+    registrar_real = memory.registrar_uso
+    memory.registrar_uso = capturar
+    try:
+        asyncio.run(precios.registrar("llm", "anthropic", "claude-haiku-4-5", usage=Uso()))
+    finally:
+        memory.registrar_uso = registrar_real
+    assert filas[0]["usd"] == "0.0000010000", filas  # nunca "1E-6"
+
+
+def test_voz_valores_de_otro_proveedor():
+    """Un .env viejo (Groq/Gemini) sigue funcionando con OpenAI: cada proveedor ignora modelo y
+    voz ajenos (warning una sola vez) y usa su default; OPENAI_/GEMINI_TTS_VOZ ganan sobre TTS_VOZ."""
+    import base64
+    import json
+    import logging
+
+    import httpx
+
+    from agentkit import memory, voz
+
+    viejas = {"VOZ_MODELO": "whisper-large-v3", "TTS_MODELO": "gemini-2.5-flash-preview-tts",
+              "TTS_VOZ": "Kore"}
+    todas = ("OPENAI_API_KEY", "GROQ_API_KEY", "GEMINI_API_KEY", "STT_PROVEEDOR", "TTS_PROVEEDOR",
+             "VOZ_MODELO", "TTS_MODELO", "TTS_VOZ", "OPENAI_TTS_VOZ", "GEMINI_TTS_VOZ", "TTS_INSTRUCCIONES")
+    for var in todas:
+        os.environ.pop(var, None)
+    os.environ.update(viejas)
+    os.environ["OPENAI_API_KEY"] = "sk-test"
+
+    enviados = []
+
+    def responder(request):
+        enviados.append(request)
+        if "googleapis" in str(request.url):
+            pcm = base64.b64encode(b"pcm").decode()
+            return httpx.Response(200, json={"candidates": [{"content": {"parts": [{"inlineData": {"data": pcm}}]}}]})
+        return httpx.Response(200, content=b"mp3")
+
+    async def pcm_falso(pcm):
+        return b"mp3-gemini"
+
+    async def no_registrar(**campos):
+        pass
+
+    cliente_real, registrar_real, pcm_real = httpx.AsyncClient, memory.registrar_uso, voz._pcm_a_mp3
+    httpx.AsyncClient = lambda **kw: cliente_real(transport=httpx.MockTransport(responder), **kw)
+    memory.registrar_uso, voz._pcm_a_mp3 = no_registrar, pcm_falso
+    voz._avisados.clear()
+    try:
+        with _Captura(logging.WARNING) as avisos:
+            assert voz._config()[3] == "gpt-4o-mini-transcribe"  # VOZ_MODELO de Groq ignorado
+            assert voz._config()[3] == "gpt-4o-mini-transcribe"
+            assert asyncio.run(voz.sintetizar("hola")) == b"mp3"
+            assert asyncio.run(voz.sintetizar("hola")) == b"mp3"
+        cuerpo = json.loads(enviados[-1].content)
+        assert cuerpo["model"] == "gpt-4o-mini-tts" and cuerpo["voice"] == "marin"
+        assert len(avisos) == 3, avisos  # VOZ_MODELO, TTS_MODELO y TTS_VOZ: una vez cada uno
+
+        os.environ["OPENAI_TTS_VOZ"] = "coral"  # la específica gana sobre TTS_VOZ
+        asyncio.run(voz.sintetizar("hola"))
+        assert json.loads(enviados[-1].content)["voice"] == "coral"
+
+        os.environ["STT_PROVEEDOR"] = "groq"  # Groq forzado con un modelo de OpenAI
+        os.environ["GROQ_API_KEY"] = "gsk-test"
+        os.environ["VOZ_MODELO"] = "gpt-4o-mini-transcribe"
+        assert voz._config()[3] == "whisper-large-v3"
+
+        # Respaldo Gemini con el .env de OpenAI (TTS_VOZ=marin, TTS_MODELO=gpt-4o-mini-tts)
+        os.environ.pop("OPENAI_API_KEY")
+        os.environ.update({"GEMINI_API_KEY": "AIza-test", "TTS_VOZ": "marin", "TTS_MODELO": "gpt-4o-mini-tts"})
+        assert asyncio.run(voz.sintetizar("hola")) == b"mp3-gemini"
+        assert "gemini-2.5-flash-preview-tts" in str(enviados[-1].url)
+        voz_gemini = json.loads(enviados[-1].content)["generationConfig"]["speechConfig"]
+        assert voz_gemini["voiceConfig"]["prebuiltVoiceConfig"]["voiceName"] == "Kore"
+        os.environ["GEMINI_TTS_VOZ"] = "Puck"
+        asyncio.run(voz.sintetizar("hola"))
+        voz_gemini = json.loads(enviados[-1].content)["generationConfig"]["speechConfig"]
+        assert voz_gemini["voiceConfig"]["prebuiltVoiceConfig"]["voiceName"] == "Puck"
+    finally:
+        httpx.AsyncClient, memory.registrar_uso, voz._pcm_a_mp3 = cliente_real, registrar_real, pcm_real
+        for var in todas:
+            os.environ.pop(var, None)
+
+
+def test_estado_costo_falla_no_rompe():
+    """Si resumen_costos revienta, /estado responde igual con costo_usd null."""
+    from fastapi.testclient import TestClient
+
+    from agentkit import memory
+    import agentkit.main as main_mod
+
+    async def reventar():
+        raise RuntimeError("BD caída")
+
+    asyncio.run(memory.inicializar_db())
+    real = memory.resumen_costos
+    memory.resumen_costos = reventar
+    os.environ["REPORTE_TOKEN"] = "token-prueba"
+    try:
+        r = TestClient(main_mod.app).get("/estado", headers={"X-Reporte-Token": "token-prueba"})
+    finally:
+        memory.resumen_costos = real
+        os.environ.pop("REPORTE_TOKEN", None)
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["costo_usd"] is None and "ultimas_24h" in data and "errores_24h" in data
+
+
 def test_duracion_audio():
     """OGG/Opus: duración exacta del granule de la última página; otro formato: por tamaño."""
     from decimal import Decimal
@@ -485,7 +651,8 @@ def test_estado_costo():
         ahora = datetime.utcnow()
         hoy_bogota = datetime.now(memory.BOGOTA).replace(hour=0, minute=0, second=0, microsecond=0)
         antes_de_hoy = hoy_bogota.astimezone(timezone.utc).replace(tzinfo=None) - timedelta(seconds=1)
-        base = dict(proveedor="x", modelo="x")
+        base = dict(proveedor="x", modelo="claude-haiku-4-5")
+        await memory.registrar_uso(tipo="llm", usd="0", creado_en=ahora, proveedor="x", modelo="modelo-sin-precio-x")
         await memory.registrar_uso(tipo="llm", usd="0.001", creado_en=ahora, **base)
         await memory.registrar_uso(tipo="stt", usd="0.0002", creado_en=ahora, **base)
         await memory.registrar_uso(tipo="tts", usd="0.0003", creado_en=ahora, **base)
@@ -509,6 +676,8 @@ def test_estado_costo():
     assert {"ultimas_24h", "errores_24h", "modelo", "version"} <= set(despues)  # campos previos intactos
     a, d = antes["costo_usd"], despues["costo_usd"]
     assert isinstance(d["hoy"], str) and isinstance(d["desglose"]["llm"], str)  # nunca float
+    assert "modelo-sin-precio-x" in d["modelos_sin_precio"]
+    assert "claude-haiku-4-5" not in d["modelos_sin_precio"]
 
     def diff(*ruta):
         x, y = a, d
@@ -544,4 +713,7 @@ if __name__ == "__main__":
     test_costo_llm_registrado_y_fallo_no_rompe()
     test_tts_openai_payload_y_costo()
     test_estado_costo()
+    test_precios_modelos_claude_y_json_malo()
+    test_voz_valores_de_otro_proveedor()
+    test_estado_costo_falla_no_rompe()
     print("OK — todos los self-checks pasaron")
