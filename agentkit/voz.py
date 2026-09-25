@@ -19,7 +19,7 @@
 #   TTS_PROVEEDOR elige el primero (default: el primero de _TTS con key); si falla, se intentan los
 #   respaldos (_RESPALDOS) que tengan key. Forzar un proveedor sin su key deja al agente sin voz.
 #   TTS_INSTRUCCIONES (tono, acento y ritmo) aplica a todos: gpt-audio la recibe en el mensaje
-#   system (seguida de CLAUSULA_DECIR), gpt-4o-mini-tts en `instructions` y Gemini antepuesta al
+#   system (tras LECTOR_GPT_AUDIO), gpt-4o-mini-tts en `instructions` y Gemini antepuesta al
 #   texto (ver _texto_gemini). Defaults: INSTRUCCIONES_FLUIDO (OpenAI) e INSTRUCCIONES_GEMINI.
 # Cada proveedor valida modelo y voz: si un valor es de otro proveedor (un .env viejo con
 # VOZ_MODELO=whisper-large-v3 o TTS_VOZ=Kore al pasar a OpenAI), usa su default y avisa una vez.
@@ -151,10 +151,14 @@ INSTRUCCIONES_FLUIDO = (
     "WhatsApp. Habla de corrido y con soltura: une las frases sin pausas largas, no te detengas en las comas "
     "ni entre oraciones, y mantén un ritmo conversacional ágil y continuo. Nada de locutor ni de robot."
 )
-# Cláusula fija tras las instrucciones (el DECIR de ronda_openai_audio.py): gpt-audio es un modelo
-# conversacional y sin ella responde al mensaje en vez de leerlo.
-CLAUSULA_DECIR = ("Tu única tarea es decir en voz alta, palabra por palabra, el mensaje del usuario, "
-                  "como si se lo estuvieras diciendo a un cliente por nota de voz. No agregues ni quites nada.")
+# gpt-audio es conversacional: con la cláusula de v0.7.1 («di palabra por palabra el mensaje del usuario»)
+# a veces respondía en vez de leer («Claro, repetimos…») y la guarda caía al respaldo (2 de 8 en la prueba
+# del 2026-09-25). Rol de lector + texto entre <leer></leer>: 8 de 8 fieles
+# (herramientas/prueba-voces/fidelidad_gpt_audio.py). Las instrucciones de tono van después.
+LECTOR_GPT_AUDIO = ("Eres un lector de voz, no un asistente: nunca conversas, nunca respondes, nunca comentas "
+                    "ni confirmas. Recibes un texto entre <leer> y </leer> y lo dices en voz alta EXACTAMENTE como "
+                    "está escrito, de la primera a la última palabra, sin agregar ni quitar nada (nada de «claro», "
+                    "«listo», «repito» ni saludos extra). Cómo debe sonar:")
 
 CARACTERES_POR_SEGUNDO = 15  # habla conversacional en español (~150 palabras por minuto)
 SIMILITUD_MINIMA = 0.9  # guarda de fidelidad de gpt-audio (difflib sobre palabras normalizadas)
@@ -245,7 +249,7 @@ def _voz_openai() -> str:
 
 async def _sintetizar_openai_audio(texto: str, modelo: str) -> bytes | None:
     """gpt-audio por Chat Completions con audio, exactamente como la muestra O3: system =
-    instrucciones + CLAUSULA_DECIR, user = el texto. Registra el costo con el usage real y descarta
+    LECTOR_GPT_AUDIO + instrucciones, user = el texto entre <leer></leer>. Registra el costo con el usage real y descarta
     el audio (None → respaldo) si el transcript no pasa la guarda es_fiel."""
     instrucciones = os.getenv("TTS_INSTRUCCIONES", INSTRUCCIONES_FLUIDO).strip()
     payload = {
@@ -253,8 +257,8 @@ async def _sintetizar_openai_audio(texto: str, modelo: str) -> bytes | None:
         "modalities": ["text", "audio"],
         "audio": {"voice": _opcion("openai-audio", ("OPENAI_TTS_VOZ", "TTS_VOZ"), "marin",
                                    VOCES_GPT_AUDIO.__contains__), "format": "mp3"},
-        "messages": [{"role": "system", "content": f"{instrucciones} {CLAUSULA_DECIR}".strip()},
-                     {"role": "user", "content": texto}],
+        "messages": [{"role": "system", "content": f"{LECTOR_GPT_AUDIO} {instrucciones}".strip()},
+                     {"role": "user", "content": f"<leer>{texto}</leer>"}],
     }
     # Genera el audio completo antes de responder: la lectura crece con el texto, con tope de 45 s
     timeout = httpx.Timeout(min(10 + len(texto) / 40, 45), connect=5)

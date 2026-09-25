@@ -715,14 +715,16 @@ def test_estado_costo():
     assert diff("desglose", "tts") == Decimal("0.0003")
 
 
-# Mensaje system con el que se generó la muestra O3 (DECIR de herramientas/prueba-voces/ronda_openai_audio.py),
-# copiado literal: si alguien toca las constantes de voz.py, esta prueba lo avisa.
+# Mensaje system de la voz O3 (rol de lector de herramientas/prueba-voces/fidelidad_gpt_audio.py + tono de la
+# muestra), copiado literal: si alguien toca las constantes de voz.py, esta prueba lo avisa.
 DECIR_MUESTRA_O3 = (
+    "Eres un lector de voz, no un asistente: nunca conversas, nunca respondes, nunca comentas "
+    "ni confirmas. Recibes un texto entre <leer> y </leer> y lo dices en voz alta EXACTAMENTE como "
+    "está escrito, de la primera a la última palabra, sin agregar ni quitar nada (nada de «claro», "
+    "«listo», «repito» ni saludos extra). Cómo debe sonar: "
     "Habla en español de Colombia, con tono cálido y cercano, como una persona amable que atiende por "
     "WhatsApp. Habla de corrido y con soltura: une las frases sin pausas largas, no te detengas en las comas "
-    "ni entre oraciones, y mantén un ritmo conversacional ágil y continuo. Nada de locutor ni de robot."
-    " Tu única tarea es decir en voz alta, palabra por palabra, el mensaje del usuario, "
-    "como si se lo estuvieras diciendo a un cliente por nota de voz. No agregues ni quites nada.")
+    "ni entre oraciones, y mantén un ritmo conversacional ágil y continuo. Nada de locutor ni de robot.")
 
 _USAGE_GPT_AUDIO = {"prompt_tokens": 120, "completion_tokens": 900,
                     "prompt_tokens_details": {"audio_tokens": 0, "cached_tokens": 0},
@@ -811,7 +813,7 @@ def test_tts_gpt_audio_payload_guarda_y_costo():
         assert cuerpo == {"model": "gpt-audio-1.5", "modalities": ["text", "audio"],
                           "audio": {"voice": "marin", "format": "mp3"},
                           "messages": [{"role": "system", "content": DECIR_MUESTRA_O3},
-                                       {"role": "user", "content": texto}]}, cuerpo
+                                       {"role": "user", "content": f"<leer>{texto}</leer>"}]}, cuerpo
         (fila,) = filas
         assert fila["tipo"] == "tts" and fila["proveedor"] == "openai-audio" and fila["modelo"] == "gpt-audio-1.5"
         assert fila["tokens_entrada"] == 120 and fila["tokens_salida"] == 900
