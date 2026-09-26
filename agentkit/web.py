@@ -231,6 +231,7 @@ var css =
   "border-radius:50%;cursor:pointer;display:grid;place-items:center;" +
   "background:var(--navy,#1a2b4c);color:var(--on-navy,#fff)}" +
   "#agentkit-enviar svg{width:18px;height:18px}" +
+  "#agentkit-panel :focus-visible,#agentkit-btn:focus-visible{outline:2px solid var(--focus,#07726A);outline-offset:2px}" +
   "@media (prefers-reduced-motion:no-preference){#agentkit-panel{transition:opacity .15s ease}}";
 var estilo = document.createElement("style");
 estilo.textContent = css;
