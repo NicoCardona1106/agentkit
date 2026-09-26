@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 from dotenv import find_dotenv, load_dotenv
-from sqlalchemy import DateTime, Float, Integer, String, Text, delete, func, select
+from sqlalchemy import DateTime, Float, Integer, String, Text, delete, func, inspect, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -49,6 +49,7 @@ class Lead(Base):
     nombre: Mapped[str] = mapped_column(String(100), default="")
     interes: Mapped[str] = mapped_column(Text, default="")
     presupuesto: Mapped[str] = mapped_column(String(100), default="")
+    contacto: Mapped[str] = mapped_column(String(200), default="")  # celular o correo (leads del chat web)
     creado: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
@@ -84,6 +85,10 @@ class UsoApi(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     creado_en: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)  # UTC
     tipo: Mapped[str] = mapped_column(String(10))  # llm | stt | tts
+    # Quién originó la llamada (p. ej. "web:<uuid>"): permite distinguir el gasto del canal web
+    # del resto (WhatsApp/Instagram) sin tocar los mensajes ni guardar IPs. Null en llamadas sin
+    # teléfono asociado (STT/TTS de voz, hoy no aplica al chat web).
+    telefono: Mapped[str | None] = mapped_column(String(50), nullable=True, index=True)
     proveedor: Mapped[str] = mapped_column(String(30))
     modelo: Mapped[str] = mapped_column(String(100))
     tokens_entrada: Mapped[int] = mapped_column(Integer, default=0)
@@ -99,6 +104,20 @@ class UsoApi(Base):
 async def inicializar_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await _migrar_columnas_nuevas(conn)
+
+
+async def _migrar_columnas_nuevas(conn):
+    """Migración idempotente: agrega columnas nuevas a tablas que ya existían sin ellas.
+    create_all solo crea tablas que faltan, nunca altera una existente — en un agente con
+    datos previos (uso_api sin `telefono`, leads sin `contacto`) hay que agregarlas a mano."""
+    def columnas(sync_conn, tabla: str) -> set[str]:
+        return {c["name"] for c in inspect(sync_conn).get_columns(tabla)}
+
+    if "telefono" not in await conn.run_sync(columnas, "uso_api"):
+        await conn.execute(text("ALTER TABLE uso_api ADD COLUMN telefono VARCHAR(50)"))
+    if "contacto" not in await conn.run_sync(columnas, "leads"):
+        await conn.execute(text("ALTER TABLE leads ADD COLUMN contacto VARCHAR(200) DEFAULT ''"))
 
 
 # ── Conversación ──────────────────────────────────────────────
@@ -149,9 +168,9 @@ async def guardar_dato_cliente(telefono: str, nombre: str = "", nota: str = ""):
 
 # ── Leads y tickets ───────────────────────────────────────────
 
-async def crear_lead(telefono: str, nombre: str, interes: str, presupuesto: str = "") -> int:
+async def crear_lead(telefono: str, nombre: str, interes: str, presupuesto: str = "", contacto: str = "") -> int:
     async with async_session() as session:
-        lead = Lead(telefono=telefono, nombre=nombre, interes=interes, presupuesto=presupuesto)
+        lead = Lead(telefono=telefono, nombre=nombre, interes=interes, presupuesto=presupuesto, contacto=contacto)
         session.add(lead)
         await session.commit()
         return lead.id
@@ -310,3 +329,14 @@ async def resumen_costos() -> dict:
         "desglose": {t: texto(v) for t, v in desglose.items()},
         "modelos_sin_precio": sorted({m for *_, m in filas if not precios.tiene_precio(m)}),
     }
+
+
+async def costo_web_hoy() -> Decimal:
+    """Costo en USD de hoy (día de Bogotá) de las llamadas del canal web (telefono "web:...").
+    Para el tope diario de /chat (WEB_CHAT_TOPE_USD_DIA)."""
+    hoy = datetime.now(BOGOTA).replace(hour=0, minute=0, second=0, microsecond=0)
+    desde = hoy.astimezone(timezone.utc).replace(tzinfo=None)
+    async with async_session() as session:
+        filas = (await session.execute(select(UsoApi.usd).where(
+            UsoApi.creado_en >= desde, UsoApi.telefono.like("web:%")))).scalars().all()
+    return sum((Decimal(u) for u in filas), Decimal(0))

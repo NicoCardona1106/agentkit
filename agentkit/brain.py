@@ -71,14 +71,15 @@ async def _system_prompt(telefono: str, en_voz: bool = False) -> list[dict]:
 
 
 async def generar_respuesta(telefono: str, mensaje: str, historial: list[dict],
-                            proveedor: ProveedorWhatsApp, en_voz: bool = False) -> str:
+                            proveedor: ProveedorWhatsApp, en_voz: bool = False, origen: str = "") -> str:
     """Genera la respuesta con Claude, ejecutando herramientas cuando el modelo las pida.
-    en_voz=True si la respuesta saldrá como nota de voz (pide texto fluido, ver INSTRUCCION_VOZ)."""
+    en_voz=True si la respuesta saldrá como nota de voz (pide texto fluido, ver INSTRUCCION_VOZ).
+    origen: de dónde llegó el chat web (utm/sección), para el aviso de registrar_lead."""
     if not mensaje or len(mensaje.strip()) < 2:
         return obtener_mensaje_fallback()
 
     system = await _system_prompt(telefono, en_voz)
-    esquemas, ejecutar = herramientas.obtener_herramientas(telefono, proveedor)
+    esquemas, ejecutar = herramientas.obtener_herramientas(telefono, proveedor, origen=origen)
     mensajes = list(historial) + [{"role": "user", "content": mensaje}]
 
     try:
@@ -87,14 +88,17 @@ async def generar_respuesta(telefono: str, mensaje: str, historial: list[dict],
                 model=MODELO, max_tokens=MAX_TOKENS, system=system,
                 tools=esquemas, messages=mensajes,
             )
-            await precios.registrar("llm", "anthropic", MODELO, usage=respuesta.usage)  # nunca lanza
+            await precios.registrar("llm", "anthropic", MODELO,
+                                    usage=respuesta.usage, telefono=telefono)  # nunca lanza
             if respuesta.stop_reason != "tool_use":
                 break
             mensajes.append({"role": "assistant", "content": respuesta.content})
             resultados = []
             for bloque in respuesta.content:
                 if bloque.type == "tool_use":
-                    logger.info(f"Tool use: {bloque.name}({bloque.input})")
+                    # En el chat web la entrada puede traer el contacto del visitante: solo el nombre.
+                    detalle = "" if telefono.startswith("web:") else bloque.input
+                    logger.info(f"Tool use: {bloque.name}({detalle})")
                     salida = await ejecutar(bloque.name, bloque.input)
                     resultados.append({"type": "tool_result", "tool_use_id": bloque.id, "content": salida})
             mensajes.append({"role": "user", "content": resultados})

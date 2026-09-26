@@ -32,7 +32,8 @@ ESQUEMAS_BASE = [
             "Registra un cliente interesado en comprar. Úsala cuando el cliente muestre intención de compra "
             "y ya conozcas su nombre e interés.",
             {"nombre": {"type": "string"}, "interes": {"type": "string", "description": "Qué le interesa comprar"},
-             "presupuesto": {"type": "string", "description": "Presupuesto aproximado si lo mencionó"}},
+             "presupuesto": {"type": "string", "description": "Presupuesto aproximado si lo mencionó"},
+             "contacto": {"type": "string", "description": "Celular o correo para contactar al cliente"}},
             ["nombre", "interes"]),
     _schema("crear_ticket",
             "Crea un ticket de soporte cuando el cliente reporta un problema con un producto o servicio.",
@@ -46,6 +47,22 @@ ESQUEMAS_BASE = [
             "pida hablar con una persona, o esté molesto y no puedas resolver su caso.",
             {"motivo": {"type": "string", "description": "Por qué se deriva y contexto para el asesor"}}, ["motivo"]),
 ]
+ESQUEMAS_BASE_POR_NOMBRE = {e["name"]: e for e in ESQUEMAS_BASE}
+
+# Chat web (telefono "web:..."): el aviso legal ya lo hace el prompt del agente, pero el contacto
+# es indispensable porque el chat no tiene número de WhatsApp del cliente. Se agrega al describir
+# la herramienta y se exige en el schema solo para ese canal (ver obtener_herramientas).
+AVISO_CONTACTO_WEB = (" Este chat es de la página web (no hay WhatsApp del cliente): antes de registrar "
+                     "el lead DEBES pedirle su celular o correo y pasarlo en el parámetro contacto.")
+
+
+def _schema_registrar_lead(es_web: bool) -> dict:
+    base = ESQUEMAS_BASE_POR_NOMBRE["registrar_lead"]
+    if not es_web:
+        return base
+    return {**base, "description": base["description"] + AVISO_CONTACTO_WEB,
+            "input_schema": {**base["input_schema"], "required": ["nombre", "interes", "contacto"]}}
+
 
 ESQUEMA_PAGO = _schema(
     "crear_link_pago",
@@ -89,10 +106,12 @@ def _cargar_herramientas_custom() -> list[dict]:
         return []
 
 
-def obtener_herramientas(telefono: str, proveedor: ProveedorWhatsApp):
-    """Retorna (esquemas, ejecutor) para el loop de tool use de brain.py."""
+def obtener_herramientas(telefono: str, proveedor: ProveedorWhatsApp, origen: str = ""):
+    """Retorna (esquemas, ejecutor) para el loop de tool use de brain.py.
+    origen: de dónde llegó el chat web (utm/sección), solo para el aviso de registrar_lead."""
     custom = _cargar_herramientas_custom()
-    esquemas = list(ESQUEMAS_BASE)
+    es_web = telefono.startswith("web:")
+    esquemas = [e if e["name"] != "registrar_lead" else _schema_registrar_lead(es_web) for e in ESQUEMAS_BASE]
     if pagos.pagos_configurados():
         esquemas.append(ESQUEMA_PAGO)
     esquemas += [h["schema"] for h in custom]
@@ -103,10 +122,15 @@ def obtener_herramientas(telefono: str, proveedor: ProveedorWhatsApp):
             if nombre == "buscar_conocimiento":
                 return buscar_en_knowledge(entrada["consulta"])
             if nombre == "registrar_lead":
-                lead_id = await memory.crear_lead(telefono, entrada["nombre"],
-                                                 entrada["interes"], entrada.get("presupuesto", ""))
-                await notificar.notificar_equipo(
-                    proveedor, f"🔥 Lead #{lead_id}: {entrada['nombre']} ({telefono}) — {entrada['interes']}")
+                contacto = entrada.get("contacto", "")
+                lead_id = await memory.crear_lead(telefono, entrada["nombre"], entrada["interes"],
+                                                 entrada.get("presupuesto", ""), contacto=contacto)
+                aviso = f"🔥 Lead #{lead_id}: {entrada['nombre']} ({telefono}) — {entrada['interes']}"
+                if contacto:
+                    aviso += f" — contacto: {contacto}"
+                if origen:
+                    aviso += f" — origen: {origen}"
+                await notificar.notificar_equipo(proveedor, aviso)
                 return f"Lead #{lead_id} registrado. El equipo fue notificado."
             if nombre == "crear_ticket":
                 ticket_id = await memory.crear_ticket(telefono, entrada["problema"])

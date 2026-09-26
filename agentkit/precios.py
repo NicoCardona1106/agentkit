@@ -139,13 +139,17 @@ def costo_audio(modelo: str, segundos: Decimal) -> Decimal:
 
 
 async def registrar(tipo: str, proveedor: str, modelo: str, *, usage=None,
-                    segundos_audio: Decimal | None = None, caracteres: int = 0):
+                    segundos_audio: Decimal | None = None, caracteres: int = 0,
+                    telefono: str | None = None):
     """Guarda en uso_api una fila con el costo de una llamada (tipo: llm | stt | tts).
     llm: `usage` es el objeto usage de Anthropic. stt/tts: segundos de audio (y caracteres en tts).
     tts con `usage` (dict de OpenAI Chat Completions con audio): costo exacto por tokens.
-    NUNCA lanza: un fallo aquí se loguea y la respuesta al cliente sigue su curso."""
+    `telefono` (opcional) distingue el canal — el chat web usa "web:<sesion>" — para el tope
+    diario del canal web (memory.costo_web_hoy). NUNCA lanza: un fallo aquí se loguea y la
+    respuesta al cliente sigue su curso."""
     try:
-        fila = {"tipo": tipo, "proveedor": proveedor, "modelo": modelo, "caracteres": caracteres}
+        fila = {"tipo": tipo, "proveedor": proveedor, "modelo": modelo, "caracteres": caracteres,
+               "telefono": telefono}
         if tipo == "llm":
             tokens = {
                 "tokens_entrada": usage.input_tokens or 0,

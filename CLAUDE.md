@@ -36,6 +36,7 @@ Lo que el core ya trae (no lo re-implementes):
 | Claude API con **tool use** (el modelo ejecuta herramientas solo) | `agentkit/brain.py` |
 | Memoria de conversación + **memoria de largo plazo por cliente** + leads + tickets | `agentkit/memory.py` (SQLite local / PostgreSQL prod) |
 | Canales: **WhatsApp** (Meta Cloud API o Twilio) e **Instagram DM**, con validación de firma de webhooks | `agentkit/providers/` |
+| **Chat web** embebido en una landing (mismo agente, memoria y avisos a ADMIN_PHONE que WhatsApp; sin voz ni modo borrador; apagado sin `WEB_CHAT_ORIGINS`) | `agentkit/web.py` (`POST /chat` + `GET /widget.js`) |
 | Herramientas base: buscar conocimiento, registrar lead, crear ticket, recordar cliente, **derivar a humano** (pausa el bot y avisa al equipo), **link de pago** (Wompi / MercadoPago / Stripe) | `agentkit/herramientas.py` |
 | Respuestas en **burbujas cortas con pausas** (humanización) | `agentkit/humanizar.py` |
 | **Notas de voz** → texto (OpenAI `gpt-4o-mini-transcribe`) y **respuesta en voz** humana (OpenAI `gpt-audio-1.5`, voz femenina `marin`, muestra «O3» elegida por prueba de oído; guarda de fidelidad y respaldo automático `gpt-4o-mini-tts` → Gemini `Kore`; voz e instrucciones configurables en .env) | `agentkit/voz.py` |
@@ -393,6 +394,15 @@ DATABASE_URL=sqlite+aiosqlite:///./agentkit.db
 # PAUSA_MINUTOS=60              # cuánto se pausa el bot al derivar a humano
 # NOMBRE_HUMANO=un asesor       # cómo llama el bot a quien atiende al derivar ("el barbero")
 # MODO_BORRADOR=true            # el admin aprueba cada respuesta (ok N / no N / editar N texto)
+
+# Chat web (opcional): embebe un chat en tu landing con el mismo agente de WhatsApp
+# WEB_CHAT_ORIGINS=https://tu-landing.com  # orígenes permitidos, separados por coma; sin
+#                               # esta variable /chat y /widget.js responden 404 (apagado)
+# WEB_CHAT_MAX_IP_HORA=30       # mensajes por IP y por hora antes de 429
+# WEB_CHAT_MAX_SESION=40        # mensajes totales por sesión antes de 429
+# WEB_CHAT_TOPE_USD_DIA=3       # tope de gasto diario (USD) del canal web antes de 503
+# WEB_CHAT_MSG_PAUSA="..."      # respuesta cuando la conversación está derivada a un humano
+# WEB_CHAT_MSG_TOPE="..."       # respuesta al superar WEB_CHAT_TOPE_USD_DIA
 ```
 
 #### 3.5 — Infraestructura
