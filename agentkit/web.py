@@ -161,9 +161,10 @@ async def widget_js():
     return Response(content=_WIDGET_JS, media_type="application/javascript; charset=utf-8")
 
 
-# Script embebible sin dependencias (JS + CSS inline). Toma los colores de la página
-# (var(--bg), var(--text), var(--navy), var(--on-navy), var(--shd), var(--shl)) con
-# fallbacks propios; hereda data-theme="dark" sin código extra porque son custom properties.
+# Script embebible sin dependencias (JS + CSS inline). Acabado neumórfico (sombras dobles
+# en relieve/hundido) con los colores de la página (var(--bg), var(--text), var(--navy),
+# var(--on-navy), var(--shd), var(--shl)) y var(--f-body) para la tipografía; todos con
+# fallbacks propios. Hereda data-theme="dark" sin código extra porque son custom properties.
 _WIDGET_JS = r"""(function(){
 "use strict";
 var script = document.currentScript;
@@ -195,29 +196,42 @@ function sesionId() {
 var sesion = sesionId();
 var origen = (location.pathname + location.search).slice(0, 200);
 
+// Sombras dobles del acabado neumórfico (colores de la página; fallbacks neutros si no
+// los define). shd = sombra oscura (abajo-derecha), shl = luz clara (arriba-izquierda).
+var shd = "var(--shd,rgba(0,0,0,.16))";
+var shl = "var(--shl,rgba(255,255,255,.75))";
+var raise = "6px 6px 13px " + shd + ",-6px -6px 13px " + shl;
+var raiseSm = "3px 3px 7px " + shd + ",-3px -3px 7px " + shl;
+var inset = "inset 4px 4px 9px " + shd + ",inset -4px -4px 9px " + shl;
+
 var css =
   "#agentkit-btn{position:fixed;bottom:20px;right:20px;width:56px;height:56px;min-width:44px;" +
-  "min-height:44px;border-radius:50%;border:none;cursor:pointer;font-size:24px;z-index:999999;" +
-  "background:var(--navy,#1a2b4c);color:var(--on-navy,#fff);box-shadow:var(--shd,0 2px 10px rgba(0,0,0,.3))}" +
+  "min-height:44px;border-radius:50%;border:none;cursor:pointer;z-index:999999;display:grid;" +
+  "place-items:center;background:var(--navy,#1a2b4c);color:var(--on-navy,#fff);box-shadow:" + raise + "}" +
+  "#agentkit-btn svg{width:24px;height:24px}" +
   "#agentkit-panel{position:fixed;bottom:86px;right:20px;width:min(340px,90vw);max-height:70vh;" +
-  "border-radius:12px;z-index:999999;overflow:hidden;font:14px/1.4 system-ui,sans-serif;display:none;" +
-  "flex-direction:column;background:var(--bg,#fff);color:var(--text,#111);" +
-  "box-shadow:var(--shl,0 4px 24px rgba(0,0,0,.2))}" +
+  "border-radius:24px;z-index:999999;overflow:hidden;font-size:14px;line-height:1.4;" +
+  "font-family:var(--f-body,inherit);display:none;" +
+  "flex-direction:column;background:var(--bg,#fff);color:var(--text,#111);box-shadow:" + raise + "}" +
   "#agentkit-panel.abierto{display:flex}" +
-  "#agentkit-header{padding:12px;display:flex;justify-content:space-between;align-items:center;" +
+  "#agentkit-header{padding:12px 14px;display:flex;justify-content:space-between;align-items:center;" +
   "background:var(--navy,#1a2b4c);color:var(--on-navy,#fff)}" +
-  "#agentkit-cerrar{background:none;border:none;color:inherit;font-size:20px;cursor:pointer;" +
-  "min-width:44px;min-height:44px}" +
-  "#agentkit-mensajes{flex:1;overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:8px}" +
-  ".agentkit-burbuja{padding:8px 12px;border-radius:10px;max-width:85%;word-wrap:break-word}" +
-  ".agentkit-burbuja.bot{align-self:flex-start;background:var(--shl,#f0f0f0)}" +
-  ".agentkit-burbuja.yo{align-self:flex-end;background:var(--navy,#1a2b4c);color:var(--on-navy,#fff)}" +
+  "#agentkit-cerrar{background:none;border:none;color:inherit;font-size:18px;cursor:pointer;" +
+  "width:44px;height:44px;border-radius:50%;display:grid;place-items:center}" +
+  "#agentkit-mensajes{flex:1;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:10px}" +
+  ".agentkit-burbuja{padding:9px 13px;border-radius:18px;max-width:85%;word-wrap:break-word}" +
+  ".agentkit-burbuja.bot{align-self:flex-start;border-bottom-left-radius:6px;box-shadow:" + raiseSm + "}" +
+  ".agentkit-burbuja.yo{align-self:flex-end;border-bottom-right-radius:6px;box-shadow:" + raiseSm + ";" +
+  "background:var(--navy,#1a2b4c);color:var(--on-navy,#fff)}" +
   "#agentkit-panel a{color:inherit}" +
-  "#agentkit-form{display:flex;gap:8px;padding:8px;border-top:1px solid var(--shd,#ddd)}" +
-  "#agentkit-input{flex:1;min-height:44px;border-radius:8px;padding:8px;border:1px solid var(--shd,#ccc);" +
-  "background:var(--bg,#fff);color:var(--text,#111)}" +
-  "#agentkit-enviar{min-width:44px;min-height:44px;border:none;border-radius:8px;cursor:pointer;" +
+  "#agentkit-form{display:flex;gap:8px;padding:10px 12px 12px}" +
+  "#agentkit-input{flex:1;height:44px;border-radius:14px;padding:0 14px;border:none;" +
+  "background:var(--bg,#fff);color:var(--text,#111);box-shadow:" + inset + "}" +
+  "#agentkit-enviar{width:44px;height:44px;min-width:44px;min-height:44px;border:none;" +
+  "border-radius:50%;cursor:pointer;display:grid;place-items:center;" +
   "background:var(--navy,#1a2b4c);color:var(--on-navy,#fff)}" +
+  "#agentkit-enviar svg{width:18px;height:18px}" +
+  "#agentkit-panel :focus-visible,#agentkit-btn:focus-visible{outline:2px solid var(--focus,#07726A);outline-offset:2px}" +
   "@media (prefers-reduced-motion:no-preference){#agentkit-panel{transition:opacity .15s ease}}";
 var estilo = document.createElement("style");
 estilo.textContent = css;
@@ -227,7 +241,8 @@ var btn = document.createElement("button");
 btn.id = "agentkit-btn";
 btn.type = "button";
 btn.setAttribute("aria-label", "Abrir chat");
-btn.textContent = "💬";
+btn.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">' +
+  '<path d="M4 4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h3v3.5L11.5 18H20a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2H4z"/></svg>';
 
 var panel = document.createElement("div");
 panel.id = "agentkit-panel";
@@ -240,7 +255,9 @@ panel.innerHTML =
   '<div id="agentkit-mensajes" role="log" aria-live="polite"></div>' +
   '<form id="agentkit-form">' +
   '<input id="agentkit-input" type="text" maxlength="1000" autocomplete="off" aria-label="Escribe tu mensaje"/>' +
-  '<button id="agentkit-enviar" type="submit" aria-label="Enviar">➤</button>' +
+  '<button id="agentkit-enviar" type="submit" aria-label="Enviar">' +
+  '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">' +
+  '<path d="M2.01 21 23 12 2.01 3 2 10l15 2-15 2z"/></svg></button>' +
   '</form>';
 panel.querySelector("#agentkit-header strong").textContent = titulo;
 
