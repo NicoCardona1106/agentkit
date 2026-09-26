@@ -215,11 +215,13 @@ admin). Apagado por defecto: sin `WEB_CHAT_ORIGINS`, `/chat` y `/widget.js` resp
    ```
 2. En el `.env` del agente, `WEB_CHAT_ORIGINS=https://tu-landing.com` (varios orígenes,
    separados por coma).
-3. El widget pinta un botón flotante y un panel de chat accesible (`role="dialog"`, foco
-   atrapado, Esc cierra, `aria-live="polite"`, botones ≥44 px, respeta reduced-motion), toma
-   los colores de la página (`var(--bg)`, `var(--text)`, `var(--navy)`, `var(--on-navy)`,
-   `var(--shd)`, `var(--shl)`, con fallbacks propios; hereda `data-theme="dark"` sin código
-   extra) y siempre muestra primero el aviso legal de IA + tu `data-saludo`.
+3. El widget pinta un botón flotante y un panel de chat con acabado neumórfico (sombras
+   dobles en relieve, campo de texto hundido) y accesible (`role="dialog"`, foco atrapado,
+   Esc cierra, `aria-live="polite"`, botones ≥44 px, respeta reduced-motion), toma
+   los colores y la tipografía de la página (`var(--bg)`, `var(--text)`, `var(--navy)`,
+   `var(--on-navy)`, `var(--shd)`, `var(--shl)`, `var(--f-body)`, con fallbacks propios;
+   hereda `data-theme="dark"` sin código extra) y siempre muestra primero el aviso legal de
+   IA + tu `data-saludo`.
 4. `POST /chat` recibe `{"sesion": "<uuid>", "texto": "...", "origen": "<opcional>"}` y
    responde `{"respuestas": ["burbuja 1", ...]}` (la misma partición en burbujas cortas de
    WhatsApp, sin las pausas). La memoria de cada sesión vive en `telefono = "web:<sesion>"`.
