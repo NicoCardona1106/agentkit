@@ -96,7 +96,9 @@ async def generar_respuesta(telefono: str, mensaje: str, historial: list[dict],
             resultados = []
             for bloque in respuesta.content:
                 if bloque.type == "tool_use":
-                    logger.info(f"Tool use: {bloque.name}({bloque.input})")
+                    # En el chat web la entrada puede traer el contacto del visitante: solo el nombre.
+                    detalle = "" if telefono.startswith("web:") else bloque.input
+                    logger.info(f"Tool use: {bloque.name}({detalle})")
                     salida = await ejecutar(bloque.name, bloque.input)
                     resultados.append({"type": "tool_result", "tool_use_id": bloque.id, "content": salida})
             mensajes.append({"role": "user", "content": resultados})
