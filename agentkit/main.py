@@ -13,7 +13,7 @@ from dotenv import find_dotenv, load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import PlainTextResponse, Response
 
-from agentkit import borrador, brain, estado, humanizar, memory, reporte, voz
+from agentkit import borrador, brain, estado, humanizar, memory, reporte, voz, web
 from agentkit.providers import MensajeEntrante, obtener_proveedor
 
 load_dotenv(find_dotenv(usecwd=True))  # el .env vive en la carpeta del agente (cwd), no junto al paquete
@@ -60,6 +60,7 @@ async def lifespan(app: FastAPI):
 from agentkit import __version__
 
 app = FastAPI(title="AgentKit — WhatsApp AI Agent", version=__version__, lifespan=lifespan)
+app.include_router(web.router)  # /chat y /widget.js — canal de chat web (apagado sin WEB_CHAT_ORIGINS)
 
 
 @app.get("/")
