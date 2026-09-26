@@ -225,14 +225,22 @@ var css =
   "background:var(--navy,#1a2b4c);color:var(--on-navy,#fff)}" +
   "#agentkit-panel a{color:inherit}" +
   "#agentkit-form{display:flex;gap:8px;padding:10px 12px 12px}" +
-  "#agentkit-input{flex:1;height:44px;border-radius:14px;padding:0 14px;border:none;" +
+  "#agentkit-input{flex:1;height:44px;border-radius:14px;padding:0 14px;border:none;font-size:16px;" +
   "background:var(--bg,#fff);color:var(--text,#111);box-shadow:" + inset + "}" +
   "#agentkit-enviar{width:44px;height:44px;min-width:44px;min-height:44px;border:none;" +
   "border-radius:50%;cursor:pointer;display:grid;place-items:center;" +
   "background:var(--navy,#1a2b4c);color:var(--on-navy,#fff)}" +
   "#agentkit-enviar svg{width:18px;height:18px}" +
   "#agentkit-panel :focus-visible,#agentkit-btn:focus-visible{outline:2px solid var(--focus,#07726A);outline-offset:2px}" +
-  "@media (prefers-reduced-motion:no-preference){#agentkit-panel{transition:opacity .15s ease}}";
+  "@media (prefers-reduced-motion:no-preference){#agentkit-panel{transition:opacity .15s ease}}" +
+  // Celular: el chat ocupa toda la pantalla (como WhatsApp), sin página detrás ni botón encima;
+  // la página de atrás no se desplaza mientras está abierto.
+  "@media (max-width:600px){" +
+  "#agentkit-panel{inset:0;width:100%;height:100dvh;max-height:none;border-radius:0;bottom:auto;right:auto}" +
+  "#agentkit-header{padding-top:calc(12px + env(safe-area-inset-top))}" +
+  "#agentkit-form{padding-bottom:calc(12px + env(safe-area-inset-bottom))}" +
+  "html.agentkit-abierto #agentkit-btn{display:none}" +
+  "html.agentkit-abierto,html.agentkit-abierto body{overflow:hidden}}";
 var estilo = document.createElement("style");
 estilo.textContent = css;
 document.head.appendChild(estilo);
@@ -281,6 +289,7 @@ function burbuja(texto, clase) {
 var saludado = false;
 function abrir() {
   panel.classList.add("abierto");
+  document.documentElement.classList.add("agentkit-abierto");
   if (!saludado) {
     burbuja("Hola, soy un asistente con IA de " + titulo + "." + (saludo ? " " + saludo : ""), "bot");
     saludado = true;
@@ -294,6 +303,7 @@ function abrir() {
 
 function cerrar() {
   panel.classList.remove("abierto");
+  document.documentElement.classList.remove("agentkit-abierto");
   document.removeEventListener("keydown", alCerrarConEsc);
   document.removeEventListener("focusin", atraparFoco);
   btn.focus();
