@@ -29,7 +29,8 @@ Cuando el core mejora, **todos tus agentes mejoran** con un `pip install --upgra
   y le pasa el contexto completo a tu asesor
 - **Cobrar dentro del chat** con links de pago — eliges tu pasarela según tu país:
   Wompi (Colombia), MercadoPago (LatAm) o Stripe (global)
-- Atender por **WhatsApp** (Meta Cloud API o Twilio) o por **Instagram DM**
+- Atender por **WhatsApp** (Meta Cloud API o Twilio), **Instagram DM** o un **chat embebido en tu
+  web** (mismo agente, memoria y avisos; ver "Chat web" más abajo)
 - Responder en **burbujas cortas con pausas**, como escribe una persona
 - Entender **notas de voz** y responder con **voz natural** (opcional; ver "Voz del agente")
 - Enviar un **reporte diario** al equipo: leads, tickets y conversaciones
@@ -198,6 +199,50 @@ salida a Gemini `Kore`. En el `.env` del agente:
   quedan no rompen nada — se ignoran con un aviso o se vuelven el respaldo —,
   pero confunden. `GROQ_API_KEY` puede quedarse como respaldo.
 
+## Chat web (embebido en tu landing)
+
+El core expone un canal de chat web que habla con el MISMO agente (memoria, herramientas,
+leads y avisos a `ADMIN_PHONE`) que atiende WhatsApp — sin voz y sin modo borrador (si
+`MODO_BORRADOR` está activo, el chat web responde igual, sin pasar por la aprobación del
+admin). Apagado por defecto: sin `WEB_CHAT_ORIGINS`, `/chat` y `/widget.js` responden 404.
+
+1. Pon en tu landing:
+   ```html
+   <script src="https://tu-agente.up.railway.app/widget.js"
+           data-titulo="Mi Negocio" data-saludo="¿En qué te ayudo?"
+           data-fallback="No pude conectarme, escríbenos por WhatsApp"
+           data-whatsapp="573001112233" defer></script>
+   ```
+2. En el `.env` del agente, `WEB_CHAT_ORIGINS=https://tu-landing.com` (varios orígenes,
+   separados por coma).
+3. El widget pinta un botón flotante y un panel de chat accesible (`role="dialog"`, foco
+   atrapado, Esc cierra, `aria-live="polite"`, botones ≥44 px, respeta reduced-motion), toma
+   los colores de la página (`var(--bg)`, `var(--text)`, `var(--navy)`, `var(--on-navy)`,
+   `var(--shd)`, `var(--shl)`, con fallbacks propios; hereda `data-theme="dark"` sin código
+   extra) y siempre muestra primero el aviso legal de IA + tu `data-saludo`.
+4. `POST /chat` recibe `{"sesion": "<uuid>", "texto": "...", "origen": "<opcional>"}` y
+   responde `{"respuestas": ["burbuja 1", ...]}` (la misma partición en burbujas cortas de
+   WhatsApp, sin las pausas). La memoria de cada sesión vive en `telefono = "web:<sesion>"`.
+5. Si el cliente ya fue derivado a un humano, `/chat` responde `WEB_CHAT_MSG_PAUSA` sin
+   llamar a Claude. Si el gasto de hoy del canal web supera `WEB_CHAT_TOPE_USD_DIA`, responde
+   503 con `WEB_CHAT_MSG_TOPE` (el gasto se mide en `uso_api`, filtrado por `telefono` que
+   empieza por `web:`).
+6. Límites en memoria, por proceso (se reinician al reiniciar el agente): `WEB_CHAT_MAX_IP_HORA`
+   mensajes por IP y hora, `WEB_CHAT_MAX_SESION` mensajes por sesión (total).
+7. Un lead que llega por el chat web no trae WhatsApp del cliente: el agente debe pedirle su
+   celular o correo (`registrar_lead` exige el parámetro `contacto` solo en este canal) antes
+   de registrar el lead; el aviso a `ADMIN_PHONE` incluye el contacto y el `origen` (utm/sección
+   de la página) que mandó el widget.
+
+| Variable | Default | Para qué |
+|----------|---------|----------|
+| `WEB_CHAT_ORIGINS` | — (canal apagado) | Orígenes permitidos, separados por coma. Sin esta variable, `/chat` y `/widget.js` responden 404 |
+| `WEB_CHAT_MAX_IP_HORA` | `30` | Mensajes por IP y por hora antes de 429 |
+| `WEB_CHAT_MAX_SESION` | `40` | Mensajes totales por sesión antes de 429 |
+| `WEB_CHAT_TOPE_USD_DIA` | `3` | Tope de gasto diario (USD) del canal web antes de responder 503 |
+| `WEB_CHAT_MSG_PAUSA` | «Ya le avisé a un asesor; te escribe pronto por WhatsApp.» | Respuesta cuando la conversación está derivada a un humano |
+| `WEB_CHAT_MSG_TOPE` | «Por hoy ya no puedo seguir esta conversación. Escríbenos por WhatsApp.» | Respuesta al superar `WEB_CHAT_TOPE_USD_DIA` |
+
 ## Stack
 
 | Componente | Tecnología |
@@ -205,7 +250,7 @@ salida a Gemini `Kore`. En el `.env` del agente:
 | Runtime | Python 3.11+ |
 | Servidor | FastAPI + Uvicorn |
 | IA | Anthropic Claude (`claude-haiku-4-5` por defecto, con tool use; `CLAUDE_MODEL` para cambiarlo) |
-| Canales | WhatsApp (Meta Cloud API / Twilio) e Instagram DM |
+| Canales | WhatsApp (Meta Cloud API / Twilio), Instagram DM y chat web embebido (`/chat` + `/widget.js`) |
 | Base de datos | SQLite (local) / PostgreSQL (producción) |
 | Voz | Escucha: OpenAI `gpt-4o-mini-transcribe`. Habla: OpenAI `gpt-audio-1.5` voz `marin` (respaldos `gpt-4o-mini-tts` y Gemini `Kore`). Opcional |
 | Pagos | Wompi / MercadoPago / Stripe (opcional, según país) |
