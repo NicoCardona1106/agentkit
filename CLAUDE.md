@@ -382,6 +382,8 @@ DATABASE_URL=sqlite+aiosqlite:///./agentkit.db
 # Opcionales
 # CLAUDE_MODEL=claude-haiku-4-5  # default; claude-sonnet-5 solo como escalada
 # ADMIN_PHONE=+57...            # avisos al equipo (leads, tickets, derivaciones, reporte)
+# TELEGRAM_TOKEN=...            # avisos al equipo por Telegram (bot); con TELEGRAM_CHAT_ID.
+# TELEGRAM_CHAT_ID=-100...      # Útil en agentes solo web (sin WhatsApp). Sin ningún canal, el aviso no se loguea.
 # REPORTE_TOKEN=un-token-secreto  # habilita GET /reporte y GET /estado (con costo_usd)
 # OPENAI_API_KEY=sk-...         # notas de voz (gpt-4o-mini-transcribe) + voz de salida (gpt-audio-1.5)
 # TTS_VOZ=marin                 # voz femenina elegida en la prueba de oído (muestra O3)

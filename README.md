@@ -233,7 +233,7 @@ admin). Apagado por defecto: sin `WEB_CHAT_ORIGINS`, `/chat` y `/widget.js` resp
    mensajes por IP y hora, `WEB_CHAT_MAX_SESION` mensajes por sesión (total).
 7. Un lead que llega por el chat web no trae WhatsApp del cliente: el agente debe pedirle su
    celular o correo (`registrar_lead` exige el parámetro `contacto` solo en este canal) antes
-   de registrar el lead; el aviso a `ADMIN_PHONE` incluye el contacto y el `origen` (utm/sección
+   de registrar el lead; el aviso (a `ADMIN_PHONE` y/o a Telegram con `TELEGRAM_TOKEN` + `TELEGRAM_CHAT_ID`, lo recomendado en un agente solo web) incluye el contacto y el `origen` (utm/sección
    de la página) que mandó el widget.
 
 | Variable | Default | Para qué |
