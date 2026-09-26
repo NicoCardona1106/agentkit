@@ -947,6 +947,299 @@ def test_voz_fluida_solo_en_turnos_de_voz():
     asyncio.run(_test_voz_fluida_solo_en_turnos_de_voz())
 
 
+# ── Chat web (core v0.8.0) ─────────────────────────────────────
+# Todas limpian _ip_ventana/_sesion_conteo (límites en memoria, por proceso) y WEB_CHAT_ORIGINS
+# al terminar, para no dejar el canal encendido ni cupos gastados para las pruebas siguientes.
+
+def test_web_chat_apagado_sin_origenes():
+    """Sin WEB_CHAT_ORIGINS, /chat y /widget.js responden 404 (canal apagado por defecto)."""
+    import uuid as uuidlib
+    from fastapi.testclient import TestClient
+    import agentkit.main as main_mod
+
+    os.environ.pop("WEB_CHAT_ORIGINS", None)
+    c = TestClient(main_mod.app)
+    assert c.get("/widget.js").status_code == 404
+    r = c.post("/chat", json={"sesion": str(uuidlib.uuid4()), "texto": "hola"})
+    assert r.status_code == 404, r.text
+
+
+def test_web_chat_valida_sesion_y_texto():
+    """400 con sesión que no es UUID, texto vacío o texto de más de 1000 caracteres."""
+    import uuid as uuidlib
+    from fastapi.testclient import TestClient
+    import agentkit.main as main_mod
+
+    os.environ["WEB_CHAT_ORIGINS"] = "https://ejemplo.test"
+    try:
+        c = TestClient(main_mod.app)
+        assert c.post("/chat", json={"sesion": "no-es-uuid", "texto": "hola"}).status_code == 400
+        sesion = str(uuidlib.uuid4())
+        assert c.post("/chat", json={"sesion": sesion, "texto": ""}).status_code == 400
+        assert c.post("/chat", json={"sesion": sesion, "texto": "a" * 1001}).status_code == 400
+    finally:
+        os.environ.pop("WEB_CHAT_ORIGINS", None)
+
+
+def test_web_chat_cors_rechaza_origen_no_listado():
+    """Preflight y POST reales: un origen fuera de WEB_CHAT_ORIGINS se rechaza."""
+    import uuid as uuidlib
+    from fastapi.testclient import TestClient
+    import agentkit.main as main_mod
+
+    os.environ["WEB_CHAT_ORIGINS"] = "https://ejemplo.test"
+    try:
+        c = TestClient(main_mod.app)
+        r = c.options("/chat", headers={"Origin": "https://otro.test",
+                                        "Access-Control-Request-Method": "POST"})
+        assert r.status_code == 400, r.text
+
+        r = c.options("/chat", headers={"Origin": "https://ejemplo.test",
+                                        "Access-Control-Request-Method": "POST"})
+        assert r.status_code == 204, r.text
+        assert r.headers["access-control-allow-origin"] == "https://ejemplo.test"
+
+        r = c.post("/chat", json={"sesion": str(uuidlib.uuid4()), "texto": "hola"},
+                  headers={"Origin": "https://otro.test"})
+        assert r.status_code == 403, r.text
+    finally:
+        os.environ.pop("WEB_CHAT_ORIGINS", None)
+
+
+def test_web_chat_429_por_ip_y_sesion():
+    """429 al superar WEB_CHAT_MAX_SESION (esa sesión) y WEB_CHAT_MAX_IP_HORA (esa IP).
+    Con un doble de brain.generar_respuesta: sin red ni ANTHROPIC_API_KEY."""
+    import uuid as uuidlib
+    from fastapi.testclient import TestClient
+    from agentkit import brain, web
+    import agentkit.main as main_mod
+
+    async def generar_falso(*a, **kw):
+        return "Hola, ¿en qué te ayudo?"
+
+    os.environ["WEB_CHAT_ORIGINS"] = "https://ejemplo.test"
+    os.environ["WEB_CHAT_MAX_IP_HORA"] = "2"
+    os.environ["WEB_CHAT_MAX_SESION"] = "1"
+    os.environ["WEB_CHAT_TOPE_USD_DIA"] = "1000000"  # aísla esta prueba del tope de costo
+    web._ip_ventana.clear()
+    web._sesion_conteo.clear()
+    real = brain.generar_respuesta
+    brain.generar_respuesta = generar_falso
+    try:
+        c = TestClient(main_mod.app)
+        sesion = str(uuidlib.uuid4())
+        assert c.post("/chat", json={"sesion": sesion, "texto": "hola"}).status_code == 200
+        # Misma sesión, tope de sesión (1) ya consumido → 429
+        assert c.post("/chat", json={"sesion": sesion, "texto": "de nuevo"}).status_code == 429
+        # La IP ya gastó sus 2 cupos (el mensaje ok + el rechazado por sesión); otra sesión → 429 por IP
+        r = c.post("/chat", json={"sesion": str(uuidlib.uuid4()), "texto": "hola"})
+        assert r.status_code == 429, r.text
+    finally:
+        brain.generar_respuesta = real
+        for var in ("WEB_CHAT_ORIGINS", "WEB_CHAT_MAX_IP_HORA", "WEB_CHAT_MAX_SESION", "WEB_CHAT_TOPE_USD_DIA"):
+            os.environ.pop(var, None)
+        web._ip_ventana.clear()
+        web._sesion_conteo.clear()
+
+
+def test_web_chat_503_tope_costo():
+    """503 con {"respuestas": [WEB_CHAT_MSG_TOPE]} cuando el gasto de hoy del canal web ya
+    superó WEB_CHAT_TOPE_USD_DIA (uso_api con telefono "web:...")."""
+    import uuid as uuidlib
+    from fastapi.testclient import TestClient
+    from agentkit import memory, web
+    import agentkit.main as main_mod
+
+    async def preparar():
+        await memory.inicializar_db()
+        await memory.registrar_uso(tipo="llm", proveedor="anthropic", modelo="claude-haiku-4-5",
+                                   usd="100", telefono=f"web:{uuidlib.uuid4()}")
+
+    os.environ["WEB_CHAT_ORIGINS"] = "https://ejemplo.test"
+    web._ip_ventana.clear()
+    web._sesion_conteo.clear()
+    asyncio.run(preparar())
+    try:
+        c = TestClient(main_mod.app)
+        r = c.post("/chat", json={"sesion": str(uuidlib.uuid4()), "texto": "hola"})
+        assert r.status_code == 503, r.text
+        assert r.json() == {"respuestas": [web._msg_tope()]}
+    finally:
+        os.environ.pop("WEB_CHAT_ORIGINS", None)
+        web._ip_ventana.clear()
+        web._sesion_conteo.clear()
+
+
+def test_web_chat_pausada():
+    """Conversación derivada a humano: /chat guarda el mensaje y responde el texto fijo de pausa."""
+    import uuid as uuidlib
+    from fastapi.testclient import TestClient
+    from agentkit import memory, web
+    import agentkit.main as main_mod
+
+    sesion = str(uuidlib.uuid4())
+    telefono = f"web:{sesion}"
+    asyncio.run(memory.pausar_conversacion(telefono, minutos=5))
+
+    os.environ["WEB_CHAT_ORIGINS"] = "https://ejemplo.test"
+    web._ip_ventana.clear()
+    web._sesion_conteo.clear()
+    try:
+        c = TestClient(main_mod.app)
+        r = c.post("/chat", json={"sesion": sesion, "texto": "hola, sigo aquí"})
+        assert r.status_code == 200, r.text
+        assert r.json() == {"respuestas": [web._msg_pausa()]}
+        historial = asyncio.run(memory.obtener_historial(telefono))
+        assert historial[-1] == {"role": "user", "content": "hola, sigo aquí"}
+    finally:
+        os.environ.pop("WEB_CHAT_ORIGINS", None)
+        web._ip_ventana.clear()
+        web._sesion_conteo.clear()
+
+
+def test_web_chat_respuesta_en_burbujas():
+    """/chat parte la respuesta en burbujas con el mismo partir_en_burbujas de WhatsApp
+    (sin pausas ni envío: aquí solo importa la partición pura)."""
+    import uuid as uuidlib
+    from fastapi.testclient import TestClient
+    from agentkit import brain, humanizar, web
+    import agentkit.main as main_mod
+
+    texto_largo = ("Primer párrafo con suficiente texto para no unirse con el siguiente. " * 2
+                  + "\n\n" + "Segundo párrafo también largo para quedar separado del primero. " * 2)
+
+    async def generar_falso(*a, **kw):
+        return texto_largo
+
+    os.environ["WEB_CHAT_ORIGINS"] = "https://ejemplo.test"
+    os.environ["WEB_CHAT_TOPE_USD_DIA"] = "1000000"
+    web._ip_ventana.clear()
+    web._sesion_conteo.clear()
+    real = brain.generar_respuesta
+    brain.generar_respuesta = generar_falso
+    try:
+        c = TestClient(main_mod.app)
+        r = c.post("/chat", json={"sesion": str(uuidlib.uuid4()), "texto": "hola"})
+        assert r.status_code == 200, r.text
+        assert r.json() == {"respuestas": humanizar.partir_en_burbujas(texto_largo)}
+        assert len(r.json()["respuestas"]) == 2
+    finally:
+        brain.generar_respuesta = real
+        for var in ("WEB_CHAT_ORIGINS", "WEB_CHAT_TOPE_USD_DIA"):
+            os.environ.pop(var, None)
+        web._ip_ventana.clear()
+        web._sesion_conteo.clear()
+
+
+def test_widget_js_contenido():
+    """GET /widget.js: menos de 15 KB, sin dependencias externas, con el aviso de IA y
+    los mínimos de accesibilidad (role=dialog, foco atrapable, window.AgentKitChat.open)."""
+    from fastapi.testclient import TestClient
+    import agentkit.main as main_mod
+
+    os.environ["WEB_CHAT_ORIGINS"] = "https://ejemplo.test"
+    try:
+        c = TestClient(main_mod.app)
+        r = c.get("/widget.js")
+        assert r.status_code == 200
+        js = r.text
+        assert len(js.encode("utf-8")) < 15_000
+        assert "asistente con IA" in js
+        assert '"role", "dialog"' in js and 'aria-live="polite"' in js
+        assert "randomUUID" in js and "sessionStorage" in js
+        assert "AgentKitChat" in js
+        assert "cdn." not in js  # sin dependencias externas
+    finally:
+        os.environ.pop("WEB_CHAT_ORIGINS", None)
+
+
+def test_herramientas_registrar_lead_web_requiere_contacto():
+    """El schema de registrar_lead exige "contacto" solo cuando telefono empieza por "web:"."""
+    from agentkit.herramientas import obtener_herramientas
+
+    esquemas, _ = obtener_herramientas("573000000000", None)
+    lead = next(e for e in esquemas if e["name"] == "registrar_lead")
+    assert "contacto" not in lead["input_schema"]["required"]
+
+    esquemas_web, _ = obtener_herramientas("web:abc-123", None)
+    lead_web = next(e for e in esquemas_web if e["name"] == "registrar_lead")
+    assert "contacto" in lead_web["input_schema"]["required"]
+    assert "DEBES pedirle" in lead_web["description"]
+
+
+async def _test_registrar_lead_web_contacto():
+    """registrar_lead desde el chat web guarda el contacto y el aviso a ADMIN_PHONE lo incluye,
+    junto con el origen de la página."""
+    from sqlalchemy import select
+
+    from agentkit import memory
+    from agentkit.herramientas import obtener_herramientas
+    from agentkit.memory import Lead
+
+    avisos = []
+
+    class FakeProv:
+        async def enviar_mensaje(self, tel, texto):
+            avisos.append((tel, texto))
+            return True
+
+    os.environ["ADMIN_PHONE"] = "+57 300 0000000"
+    try:
+        telefono = f"web:test-{os.urandom(4).hex()}"
+        _, ejecutar = obtener_herramientas(telefono, FakeProv(), origen="/precios?utm=fb")
+        resultado = await ejecutar("registrar_lead", {
+            "nombre": "Laura", "interes": "Plan mensual", "contacto": "laura@correo.com"})
+        assert "registrado" in resultado
+
+        async with memory.async_session() as session:
+            lead = (await session.execute(select(Lead).where(Lead.telefono == telefono))).scalar_one()
+            assert lead.contacto == "laura@correo.com"
+
+        assert avisos and "laura@correo.com" in avisos[-1][1]
+        assert "/precios?utm=fb" in avisos[-1][1]
+    finally:
+        os.environ.pop("ADMIN_PHONE", None)
+
+
+def test_registrar_lead_web_contacto():
+    asyncio.run(_test_registrar_lead_web_contacto())
+
+
+async def _test_migracion_columnas_nuevas():
+    """La migración agrega uso_api.telefono y leads.contacto a un esquema viejo, sin romper
+    al correr dos veces (idempotente)."""
+    import tempfile
+
+    from sqlalchemy import inspect as sa_inspect
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    from agentkit import memory
+
+    ruta = os.path.join(tempfile.gettempdir(), f"agentkit_migracion_{os.urandom(4).hex()}.db")
+    motor = create_async_engine(f"sqlite+aiosqlite:///{ruta}")
+
+    def cols(sync_conn, tabla):
+        return {c["name"] for c in sa_inspect(sync_conn).get_columns(tabla)}
+
+    try:
+        async with motor.begin() as conn:
+            await conn.exec_driver_sql("CREATE TABLE uso_api (id INTEGER PRIMARY KEY, tipo VARCHAR(10))")
+            await conn.exec_driver_sql("CREATE TABLE leads (telefono VARCHAR(50) PRIMARY KEY)")
+            assert "telefono" not in await conn.run_sync(cols, "uso_api")
+
+            await memory._migrar_columnas_nuevas(conn)
+            await memory._migrar_columnas_nuevas(conn)  # segunda vez: no debe fallar (idempotente)
+
+            assert "telefono" in await conn.run_sync(cols, "uso_api")
+            assert "contacto" in await conn.run_sync(cols, "leads")
+    finally:
+        await motor.dispose()
+
+
+def test_migracion_columnas_nuevas():
+    asyncio.run(_test_migracion_columnas_nuevas())
+
+
 if __name__ == "__main__":
     test_humanizar()
     test_firma_twilio()
@@ -973,4 +1266,15 @@ if __name__ == "__main__":
     test_es_fiel()
     test_tts_gpt_audio_payload_guarda_y_costo()
     test_voz_fluida_solo_en_turnos_de_voz()
+    test_web_chat_apagado_sin_origenes()
+    test_web_chat_valida_sesion_y_texto()
+    test_web_chat_cors_rechaza_origen_no_listado()
+    test_web_chat_429_por_ip_y_sesion()
+    test_web_chat_503_tope_costo()
+    test_web_chat_pausada()
+    test_web_chat_respuesta_en_burbujas()
+    test_widget_js_contenido()
+    test_herramientas_registrar_lead_web_requiere_contacto()
+    test_registrar_lead_web_contacto()
+    test_migracion_columnas_nuevas()
     print("OK — todos los self-checks pasaron")
