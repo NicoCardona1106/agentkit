@@ -1,2 +1,2 @@
 # agentkit — Core compartido para agentes de WhatsApp con IA
-__version__ = "0.8.2"
+__version__ = "0.8.3"
