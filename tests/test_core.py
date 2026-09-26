@@ -1239,9 +1239,50 @@ async def _test_migracion_columnas_nuevas():
 def test_migracion_columnas_nuevas():
     asyncio.run(_test_migracion_columnas_nuevas())
 
+def test_notificar_telegram_y_sin_canal():
+    """Avisos: Telegram si hay TELEGRAM_*; sin canal no se escribe el texto (puede traer datos personales)."""
+    import logging
+    from unittest import mock
+    from agentkit import notificar
+
+    class ProvFalso:
+        async def enviar_mensaje(self, a, t):
+            return True
+
+    llamadas = []
+
+    class Resp:
+        status_code = 200
+
+    class ClienteFalso:
+        def __init__(self, *a, **k): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def post(self, url, data):
+            llamadas.append((url, data)); return Resp()
+
+    texto = "🔥 Lead #1: Ana (web:x) — contacto 3001234567"
+    with mock.patch.dict(os.environ, {"TELEGRAM_TOKEN": "tk", "TELEGRAM_CHAT_ID": "-100", "ADMIN_PHONE": ""}),          mock.patch.object(notificar.httpx, "AsyncClient", ClienteFalso):
+        assert asyncio.run(notificar.notificar_equipo(ProvFalso(), texto)) is True
+    assert llamadas and llamadas[0][1] == {"chat_id": "-100", "text": texto}
+
+    registros = []
+    manejador = logging.Handler(); manejador.emit = lambda r: registros.append(r.getMessage())
+    logging.getLogger("agentkit").addHandler(manejador)
+    nivel = logging.getLogger("agentkit").level; logging.getLogger("agentkit").setLevel(logging.INFO)
+    try:
+        with mock.patch.dict(os.environ, {"TELEGRAM_TOKEN": "", "TELEGRAM_CHAT_ID": "", "ADMIN_PHONE": ""}):
+            assert asyncio.run(notificar.notificar_equipo(ProvFalso(), texto)) is False
+    finally:
+        logging.getLogger("agentkit").removeHandler(manejador)
+        logging.getLogger("agentkit").setLevel(nivel)
+    assert registros and not any("3001234567" in r or "Ana" in r for r in registros)
+
+
 
 if __name__ == "__main__":
     test_humanizar()
+    test_notificar_telegram_y_sin_canal()
     test_firma_twilio()
     test_firma_meta()
     test_instagram_parse()
