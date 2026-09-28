@@ -1176,6 +1176,16 @@ def test_web_chat_respuesta_en_burbujas():
         web._sesion_conteo.clear()
 
 
+def test_widget_ocultar_con():
+    """data-ocultar-con esconde el botón flotante mientras el selector se ve (no con el chat abierto)."""
+    from agentkit import web
+    js = web._WIDGET_JS
+    assert 'getAttribute("data-ocultar-con")' in js
+    assert "IntersectionObserver" in js and '"agentkit-oculto"' in js
+    assert "html.agentkit-oculto:not(.agentkit-abierto) #agentkit-btn{opacity:0;scale:.8;pointer-events:none}" in js
+    assert "prefers-reduced-motion:reduce" in js
+
+
 def test_widget_js_contenido():
     """GET /widget.js: menos de 15 KB, sin dependencias externas, con el aviso de IA y
     los mínimos de accesibilidad (role=dialog, foco atrapable, window.AgentKitChat.open)."""
@@ -1360,6 +1370,7 @@ if __name__ == "__main__":
     test_web_chat_pausada()
     test_web_chat_respuesta_en_burbujas()
     test_widget_js_contenido()
+    test_widget_ocultar_con()
     test_herramientas_registrar_lead_web_requiere_contacto()
     test_registrar_lead_web_contacto()
     test_migracion_columnas_nuevas()
