@@ -174,6 +174,9 @@ var titulo = script.getAttribute("data-titulo") || "este sitio";
 var saludo = script.getAttribute("data-saludo") || "";
 var fallbackTexto = script.getAttribute("data-fallback") || "No pude conectarme. Intenta más tarde.";
 var whatsapp = script.getAttribute("data-whatsapp") || "";
+// Selectores (separados por coma) que, mientras se ven en pantalla, esconden el botón flotante:
+// p. ej. data-ocultar-con="#contacto" para que el botón no tape el formulario de la landing.
+var ocultarCon = script.getAttribute("data-ocultar-con") || "";
 
 function uuid() {
   try { return crypto.randomUUID(); } catch (e) {
@@ -207,7 +210,10 @@ var inset = "inset 4px 4px 9px " + shd + ",inset -4px -4px 9px " + shl;
 var css =
   "#agentkit-btn{position:fixed;bottom:20px;right:20px;width:56px;height:56px;min-width:44px;" +
   "min-height:44px;border-radius:50%;border:none;cursor:pointer;z-index:999999;display:grid;" +
-  "place-items:center;background:var(--navy,#1a2b4c);color:var(--on-navy,#fff);box-shadow:" + raise + "}" +
+  "place-items:center;background:var(--navy,#1a2b4c);color:var(--on-navy,#fff);box-shadow:" + raise + ";" +
+  "transition:opacity .15s ease-out,scale .15s ease-out}" +
+  "html.agentkit-oculto:not(.agentkit-abierto) #agentkit-btn{opacity:0;scale:.8;pointer-events:none}" +
+  "@media (prefers-reduced-motion:reduce){#agentkit-btn{transition:none}}" +
   "#agentkit-btn svg{width:24px;height:24px}" +
   "#agentkit-panel{position:fixed;bottom:86px;right:20px;width:min(340px,90vw);max-height:70vh;" +
   "border-radius:24px;z-index:999999;overflow:hidden;font-size:14px;line-height:1.4;" +
@@ -271,6 +277,17 @@ panel.querySelector("#agentkit-header strong").textContent = titulo;
 
 document.body.appendChild(btn);
 document.body.appendChild(panel);
+
+if (ocultarCon && "IntersectionObserver" in window) {
+  var visibles = new Set();
+  var objetivos = [];
+  try { objetivos = document.querySelectorAll(ocultarCon); } catch (e) { objetivos = []; }
+  var io = new IntersectionObserver(function (entradas) {
+    entradas.forEach(function (en) { if (en.isIntersecting) visibles.add(en.target); else visibles.delete(en.target); });
+    document.documentElement.classList.toggle("agentkit-oculto", visibles.size > 0);
+  });
+  Array.prototype.forEach.call(objetivos, function (el) { io.observe(el); });
+}
 
 var mensajes = panel.querySelector("#agentkit-mensajes");
 var input = panel.querySelector("#agentkit-input");
