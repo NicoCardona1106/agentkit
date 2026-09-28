@@ -44,6 +44,7 @@ Lo que el core ya trae (no lo re-implementes):
 | **Reporte diario** al equipo por WhatsApp (`GET /reporte?token=...`) | `agentkit/reporte.py` |
 | **Estado del agente en JSON** para un panel externo (`GET /estado?token=...`) | `agentkit/main.py` + `agentkit/estado.py` |
 | **Modo borrador**: el admin aprueba/edita cada respuesta por WhatsApp antes de que salga (`ok N` / `no N` / `editar N texto`) | `agentkit/borrador.py` |
+| **Defensa contra inyección de instrucciones**: bloque de seguridad fijo al final de todo prompt, mensajes del cliente envueltos con id aleatorio por turno, herramienta `reportar_manipulacion` (aviso al equipo, 1/hora). NO se quita por agente. Antes de publicar un core o cambiar un prompt: `tests/ataques_prompt.py` desde la carpeta del agente. Lecciones y capas pendientes en `docs/SEGURIDAD.md` | `agentkit/brain.py` + `agentkit/herramientas.py` |
 | Chat de prueba local sin WhatsApp | `python -m agentkit.chat` |
 
 Estructura de un agente (la capa fina que TÚ generas). Cada agente vive en
