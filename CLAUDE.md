@@ -66,7 +66,7 @@ agentes/mi-agente/
 ```
 
 Modelo de IA: `claude-haiku-4-5` por defecto (configurable con `CLAUDE_MODEL` en .env).
-`claude-sonnet-5` solo como escalada explícita para casos difíciles, nunca por defecto.
+`claude-sonnet-5-5` solo como escalada explícita para casos difíciles, nunca por defecto.
 
 ---
 
@@ -110,7 +110,7 @@ Antes de empezar, dejame verificar que tu entorno esta listo...
    (tag) del core — así el build de Docker/Railway es reproducible y
    actualizar el agente = subir el tag en esta línea:
    ```
-   agentkit @ git+https://github.com/NicoCardona1106/agentkit.git@v0.5.2
+   agentkit @ git+https://github.com/NicoCardona1106/agentkit.git@v<ÚLTIMO_TAG>
    ```
    (Verifica el último tag con `git tag` en el repo del core o en GitHub → Releases)
 4. `pip install -r requirements.txt` (desde la carpeta del agente)
@@ -381,7 +381,7 @@ DATABASE_URL=sqlite+aiosqlite:///./agentkit.db
 # PAGOS_MONEDA=COP              # solo si difiere del default de la pasarela
 
 # Opcionales
-# CLAUDE_MODEL=claude-haiku-4-5  # default; claude-sonnet-5 solo como escalada
+# CLAUDE_MODEL=claude-haiku-4-5  # default; claude-sonnet-5-5 solo como escalada
 # ADMIN_PHONE=+57...            # avisos al equipo (leads, tickets, derivaciones, reporte)
 # TELEGRAM_TOKEN=...            # avisos al equipo por Telegram (bot); con TELEGRAM_CHAT_ID.
 # TELEGRAM_CHAT_ID=-100...      # Útil en agentes solo web (sin WhatsApp). Sin ningún canal, el aviso no se loguea.
