@@ -239,6 +239,7 @@ admin). Apagado por defecto: sin `WEB_CHAT_ORIGINS`, `/chat` y `/widget.js` resp
 | Variable | Default | Para qué |
 |----------|---------|----------|
 | `WEB_CHAT_ORIGINS` | — (canal apagado) | Orígenes permitidos, separados por coma. Sin esta variable, `/chat` y `/widget.js` responden 404 |
+| `CONOCIMIENTO_EN_PROMPT` | `false` | Conviene con conocimiento corto y tráfico seguido; con Haiku el prefijo debe pasar de 4.096 tokens para cachear |
 | `WEB_CHAT_MAX_IP_HORA` | `30` | Mensajes por IP y por hora antes de 429 |
 | `WEB_CHAT_MAX_SESION` | `40` | Mensajes totales por sesión antes de 429 |
 | `WEB_CHAT_TOPE_USD_DIA` | `3` | Tope de gasto diario (USD) del canal web antes de responder 503 |
