@@ -382,6 +382,7 @@ DATABASE_URL=sqlite+aiosqlite:///./agentkit.db
 
 # Opcionales
 # CLAUDE_MODEL=claude-haiku-4-5  # default; claude-sonnet-5-5 solo como escalada
+# CONOCIMIENTO_EN_PROMPT=true    # conviene con conocimiento corto y tráfico seguido; con Haiku el prefijo debe pasar de 4.096 tokens para cachear
 # ADMIN_PHONE=+57...            # avisos al equipo (leads, tickets, derivaciones, reporte)
 # TELEGRAM_TOKEN=...            # avisos al equipo por Telegram (bot); con TELEGRAM_CHAT_ID.
 # TELEGRAM_CHAT_ID=-100...      # Útil en agentes solo web (sin WhatsApp). Sin ningún canal, el aviso no se loguea.

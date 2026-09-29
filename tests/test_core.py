@@ -242,13 +242,58 @@ def test_webhook_verificacion():
 
 
 async def _test_system_prompt_cacheable():
-    """El system va en 2 bloques: el del negocio con cache_control y el contexto variable aparte."""
+    """El conocimiento es opcional, estable, ordenado y conserva la seguridad al final."""
+    import logging
+    from pathlib import Path
+    from unittest import mock
+
     from agentkit import brain, memory
     await memory.inicializar_db()
-    bloques = await brain._system_prompt("57300000000")
-    assert isinstance(bloques, list) and len(bloques) == 2
-    assert bloques[0].get("cache_control") == {"type": "ephemeral"}
-    assert "cache_control" not in bloques[1] and "Fecha y hora" in bloques[1]["text"]
+    cwd = os.getcwd()
+    with tempfile.TemporaryDirectory(dir=cwd) as temporal:
+        os.chdir(temporal)
+        try:
+            Path("config").mkdir()
+            Path("config/prompts.yaml").write_text("system_prompt: Prompt de prueba\n", encoding="utf-8")
+            Path("knowledge").mkdir()
+            Path("knowledge/zeta.txt").write_text("Último", encoding="utf-8")
+            Path("knowledge/alfa.txt").write_text("Primero", encoding="utf-8")
+            Path("knowledge/.oculto.txt").write_text("Secreto", encoding="utf-8")
+            Path("knowledge/carpeta").mkdir()
+            Path("knowledge/invalido.bin").write_bytes(b"\xff")
+
+            with mock.patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("CONOCIMIENTO_EN_PROMPT", None)
+                apagado = await brain._system_prompt("57300000000")
+                assert "## Conocimiento del negocio" not in apagado[0]["text"]
+                assert apagado[0].get("cache_control") == {"type": "ephemeral"}
+
+            with mock.patch.dict(os.environ, {"CONOCIMIENTO_EN_PROMPT": "SÍ"}):
+                primero = await brain._system_prompt("57300000000")
+                segundo = await brain._system_prompt("57300000000")
+                texto = primero[0]["text"]
+                assert texto.index("### alfa.txt") < texto.index("### zeta.txt")
+                assert ".oculto.txt" not in texto and "invalido.bin" not in texto
+                assert texto.endswith(brain.BLOQUE_SEGURIDAD)
+                assert primero[0] == segundo[0]
+                assert primero[0].get("cache_control") == {"type": "ephemeral"}
+
+            registros = []
+            manejador = logging.Handler()
+            manejador.emit = lambda registro: registros.append(registro.getMessage())
+            brain.logger.addHandler(manejador)
+            brain._CONOCIMIENTO_GRANDE_ADVERTIDO = False
+            try:
+                with mock.patch.dict(os.environ, {"CONOCIMIENTO_EN_PROMPT": "true",
+                                                   "CONOCIMIENTO_MAX_CARACTERES": "1"}):
+                    excedido = await brain._system_prompt("57300000000")
+                    await brain._system_prompt("57300000000")
+            finally:
+                brain.logger.removeHandler(manejador)
+            assert "## Conocimiento del negocio" not in excedido[0]["text"]
+            assert len(registros) == 1 and "1" in registros[0]
+        finally:
+            os.chdir(cwd)
 
 
 def test_defensa_inyeccion():
