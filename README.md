@@ -92,6 +92,21 @@ y la configuración del webhook en Meta o Twilio).
 
 Ambos comparten `REPORTE_TOKEN`: sin token o con uno incorrecto, 403.
 
+## Instagram Login
+
+Con `PROVIDER=instagram`, abre `GET /instagram/conectar` para autorizar una
+cuenta profesional directamente con Instagram, sin página de Facebook. La
+conexión se guarda cifrada y se renueva antes de vencer.
+
+| Variable | Default | Para qué |
+|----------|---------|----------|
+| `IG_APP_ID` | — | App ID del producto «Instagram API with Instagram Login» |
+| `IG_APP_SECRET` | — | Firma el `state` de OAuth y valida la firma de los webhooks |
+| `IG_TOKEN_KEY` | — | Clave Fernet para cifrar el token. Genera una con `python -c "from cryptography.fernet import Fernet;print(Fernet.generate_key().decode())"` |
+| `IG_GRAPH_VERSION` | vacío | Versión opcional de Graph API; vacío llama a `graph.instagram.com` sin versión |
+| `IG_VERIFY_TOKEN` | — | Token elegido por ti para verificar el webhook |
+| `IG_ACCESS_TOKEN` | — | Respaldo temporal para agentes que aún usan Facebook Login |
+
 Cada llamada a Claude, a la transcripción y a la voz queda en la tabla
 `uso_api` con su costo en USD (precios en `agentkit/precios.py`; para
 corregir uno sin tocar código, crea `config/precios.json`, p. ej.

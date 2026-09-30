@@ -80,6 +80,204 @@ def test_instagram_parse():
     assert msgs[1].audio_ref == "https://cdn/audio.mp4"
 
 
+def test_instagram_state():
+    from agentkit.instagram_cuenta import crear_state, state_valido
+
+    os.environ["IG_APP_SECRET"] = "secreto-ig"
+    state = crear_state(1_000)
+    assert state_valido(state, 1_600)
+    assert not state_valido(state + "x", 1_600)
+    assert not state_valido(state, 1_601)
+    os.environ.pop("IG_APP_SECRET")
+
+
+async def _test_instagram_callback_y_cifrado():
+    from cryptography.fernet import Fernet
+    from sqlalchemy import delete, select
+    from unittest import mock
+
+    from agentkit import instagram_cuenta, memory
+    from agentkit.memory import CuentaInstagram, async_session
+
+    await memory.inicializar_db()
+    async with async_session() as session:
+        await session.execute(delete(CuentaInstagram))
+        await session.commit()
+    os.environ.update({
+        "IG_APP_ID": "app-1",
+        "IG_APP_SECRET": "secreto-ig",
+        "IG_TOKEN_KEY": Fernet.generate_key().decode(),
+        "PUBLIC_URL": "https://agente.test",
+    })
+    llamadas = []
+
+    class Respuesta:
+        def __init__(self, datos): self._datos = datos
+        def raise_for_status(self): pass
+        def json(self): return self._datos
+
+    class Cliente:
+        def __init__(self, *a, **k): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def post(self, url, **kwargs):
+            llamadas.append(("POST", url, kwargs))
+            if url.endswith("oauth/access_token"):
+                return Respuesta({"access_token": "token-corto"})
+            return Respuesta({"success": True})
+        async def get(self, url, **kwargs):
+            llamadas.append(("GET", url, kwargs))
+            if url.endswith("/access_token"):
+                return Respuesta({"access_token": "token-claro", "expires_in": 5_184_000})
+            return Respuesta({"user_id": "ig-123", "username": "reflexcam"})
+
+    state = instagram_cuenta.crear_state()
+    with mock.patch.object(instagram_cuenta.httpx, "AsyncClient", Cliente):
+        respuesta = await instagram_cuenta.callback_instagram(code="codigo", state=state)
+    assert respuesta.status_code == 200 and b"@reflexcam" in respuesta.body
+    assert len(llamadas) == 4, llamadas
+    async with async_session() as session:
+        cuenta = (await session.execute(select(CuentaInstagram).where(
+            CuentaInstagram.ig_user_id == "ig-123"))).scalar_one()
+        assert cuenta.token_cifrado != "token-claro" and "token-claro" not in cuenta.token_cifrado
+    assert await instagram_cuenta.token_activo() == ("ig-123", "token-claro")
+    for variable in ("IG_APP_ID", "IG_APP_SECRET", "PUBLIC_URL"):
+        os.environ.pop(variable, None)
+
+
+async def _test_instagram_renovacion():
+    from datetime import datetime, timedelta
+    from unittest import mock
+
+    from agentkit import instagram_cuenta, memory
+
+    await memory.guardar_cuenta_instagram("ig-renueva", "cuenta_ok", "token-viejo",
+                                          datetime.utcnow() + timedelta(days=1))
+    await memory.guardar_cuenta_instagram("ig-falla", "cuenta_falla", "token-falla",
+                                          datetime.utcnow() + timedelta(days=1))
+    os.environ["PROVIDER"] = "instagram"
+    avisos = []
+
+    class Respuesta:
+        def raise_for_status(self): pass
+        def json(self): return {"access_token": "token-nuevo", "expires_in": 5_184_000}
+
+    class Cliente:
+        def __init__(self, *a, **k): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def get(self, url, params):
+            if params["access_token"] == "token-falla":
+                raise instagram_cuenta.httpx.ConnectError("sin red")
+            return Respuesta()
+
+    async def aviso(_proveedor, texto):
+        avisos.append(texto)
+        return True
+
+    with mock.patch.object(instagram_cuenta.httpx, "AsyncClient", Cliente), \
+         mock.patch.object(instagram_cuenta.notificar, "notificar_equipo", aviso):
+        await instagram_cuenta.renovar_tokens()
+    cuentas = await memory.cuentas_instagram_por_renovar(datetime.utcnow() + timedelta(days=10))
+    por_id = {c["ig_user_id"]: c for c in cuentas}
+    assert "ig-renueva" not in por_id
+    assert por_id["ig-falla"]["token"] == "token-falla"
+    assert len(avisos) == 1 and "token" not in avisos[0].lower()
+
+
+async def _test_instagram_envio_24h_y_respaldo():
+    from datetime import datetime, timedelta
+    from unittest import mock
+
+    from agentkit import instagram_cuenta, memory
+    from agentkit.memory import Mensaje, async_session
+    from agentkit.providers.instagram import ProveedorInstagram
+
+    enviados = []
+
+    class Respuesta:
+        status_code = 200
+
+    class Cliente:
+        def __init__(self, *a, **k): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def post(self, url, **kwargs):
+            enviados.append((url, kwargs))
+            return Respuesta()
+
+    async def token_conectado(): return ("ig-negocio", "token-login")
+    async def sin_cuenta(): return None
+
+    reciente, viejo = "igsid-reciente", "igsid-viejo"
+    await memory.limpiar_historial(reciente)
+    await memory.limpiar_historial(viejo)
+    await memory.guardar_mensaje(reciente, "user", "hola")
+    async with async_session() as session:
+        session.add(Mensaje(telefono=viejo, role="user", content="hola",
+                            timestamp=datetime.utcnow() - timedelta(hours=25)))
+        await session.commit()
+    with mock.patch.object(instagram_cuenta, "token_activo", token_conectado), \
+         mock.patch("agentkit.providers.instagram.httpx.AsyncClient", Cliente):
+        proveedor = ProveedorInstagram()
+        assert await proveedor.enviar_mensaje(reciente, "respuesta") is True
+        assert await proveedor.enviar_mensaje(viejo, "respuesta") is False
+        # Alguien nuevo que solo llegó por el webhook (aún sin fila en mensajes) sí recibe respuesta,
+        # p. ej. «no pude escuchar tu nota de voz», que sale antes de guardar el mensaje.
+        nuevo = "igsid-solo-webhook"
+        await memory.limpiar_historial(nuevo)
+
+        class Peticion:
+            async def json(self):
+                return {"entry": [{"messaging": [{"sender": {"id": nuevo}, "message": {"mid": "m9", "text": "hola"}}]}]}
+
+        await proveedor.parsear_webhook(Peticion())
+        assert await proveedor.enviar_mensaje(nuevo, "¿Me lo escribes?") is True
+        enviados.pop()
+    assert len(enviados) == 1 and enviados[0][0].endswith("/ig-negocio/messages")
+    assert enviados[0][1]["headers"] == {"Authorization": "Bearer token-login"}
+
+    os.environ["IG_ACCESS_TOKEN"] = "token-facebook"
+    with mock.patch.object(instagram_cuenta, "token_activo", sin_cuenta), \
+         mock.patch("agentkit.providers.instagram.httpx.AsyncClient", Cliente):
+        assert await ProveedorInstagram().enviar_mensaje(reciente, "respaldo") is True
+    assert enviados[-1][0] == "https://graph.facebook.com/v21.0/me/messages"
+    assert enviados[-1][1]["params"] == {"access_token": "token-facebook"}
+    os.environ.pop("IG_ACCESS_TOKEN")
+
+
+def test_instagram_rutas_apagadas():
+    from fastapi.testclient import TestClient
+
+    os.environ["PROVIDER"] = "instagram"
+    os.environ.pop("IG_APP_ID", None)
+    os.environ.pop("IG_APP_SECRET", None)
+    import agentkit.main as main_mod
+    cliente = TestClient(main_mod.app)
+    assert cliente.get("/instagram/conectar").status_code == 404
+    assert cliente.get("/instagram/callback").status_code == 404
+
+
+async def _test_instagram_estado_sin_token():
+    from datetime import datetime, timedelta
+    from fastapi.testclient import TestClient
+
+    from agentkit import memory
+    import agentkit.main as main_mod
+
+    os.environ["PROVIDER"] = "instagram"
+    os.environ["REPORTE_TOKEN"] = "token-prueba"
+    await memory.guardar_cuenta_instagram("ig-estado", "usuario_estado", "secreto-estado",
+                                          datetime.utcnow() + timedelta(days=30))
+    datos = TestClient(main_mod.app).get(
+        "/estado", headers={"X-Reporte-Token": "token-prueba"}).json()
+    assert datos["instagram"]["conectada"] is True
+    assert datos["instagram"]["usuario"] == "usuario_estado"
+    assert datos["instagram"]["token_vence_en"]
+    assert "secreto-estado" not in str(datos) and "token_cifrado" not in str(datos)
+    os.environ.pop("REPORTE_TOKEN")
+
+
 def test_pagos_seleccion():
     from agentkit import pagos
 
@@ -1386,6 +1584,12 @@ if __name__ == "__main__":
     test_firma_twilio()
     test_firma_meta()
     test_instagram_parse()
+    test_instagram_state()
+    asyncio.run(_test_instagram_callback_y_cifrado())
+    asyncio.run(_test_instagram_renovacion())
+    asyncio.run(_test_instagram_envio_24h_y_respaldo())
+    test_instagram_rutas_apagadas()
+    asyncio.run(_test_instagram_estado_sin_token())
     test_pagos_seleccion()
     test_voz_config()
     test_tts()

@@ -175,8 +175,8 @@ PREGUNTA 9: ¿Por dónde atenderá tu agente? EL USUARIO ELIGE — tú solo reco
                del negocio. Recomiéndalo si ya validó la idea y tiene (o puede
                crear) Facebook Business. Responder chats entrantes es gratis.
             3. Instagram DM — si su audiencia y ventas llegan por Instagram
-               (marcas, creadores, tiendas con perfil activo). Requiere cuenta
-               profesional vinculada a una página de Facebook. Ojo: solo se
+               (marcas, creadores, tiendas con perfil activo). Usa Instagram
+               Login con una cuenta profesional, sin página de Facebook. Ojo: solo se
                puede responder dentro de las 24h del último mensaje del cliente.
 
             Guía rápida: negocio local / ventas por WhatsApp → 1 para probar y
@@ -188,8 +188,9 @@ PREGUNTA 10: Credenciales del canal elegido:
                     inventas), App Secret (firma del webhook — developers.facebook.com
                     → tu app → Configuración → Básica)
             TWILIO: Account SID, Auth Token, número de WhatsApp del sandbox
-            INSTAGRAM: Page Access Token con permiso instagram_manage_messages,
-                    Verify Token (lo inventas) y App Secret de la app de Meta
+            INSTAGRAM: Instagram App ID, App Secret, Verify Token (lo inventas)
+                    e IG_TOKEN_KEY para cifrar el token. La cuenta se autoriza en
+                    /instagram/conectar; no pide Page Access Token ni página de Facebook.
 
 PREGUNTA 11 (opcional): ¿Quieres cobrar dentro del chat con links de pago?
             Pregunta EN QUÉ PAÍS opera el negocio y recomienda — pero EL USUARIO
@@ -364,9 +365,12 @@ PROVIDER=twilio                 # meta | twilio | instagram
 # TWILIO_PHONE_NUMBER=...
 
 # Si instagram:
-# IG_ACCESS_TOKEN=...           # Page Access Token con instagram_manage_messages
+# IG_APP_ID=...                 # Instagram API with Instagram Login
+# IG_APP_SECRET=...             # firma OAuth y webhooks
+# IG_TOKEN_KEY=...              # generar con: python -c "from cryptography.fernet import Fernet;print(Fernet.generate_key().decode())"
+# IG_GRAPH_VERSION=...          # opcional; vacío llama sin versión
 # IG_VERIFY_TOKEN=...
-# IG_APP_SECRET=...
+# IG_ACCESS_TOKEN=...           # solo respaldo temporal de la vía vieja con Facebook
 
 # Producción
 PORT=8000
@@ -514,10 +518,13 @@ navegador contigo guiándolo click por click, confirmando cada uno.
      suscribirse al campo "messages"
    - TWILIO: Console → Messaging → Sandbox Settings →
      "When a message comes in": `https://tu-app.up.railway.app/webhook` (POST)
-   - INSTAGRAM: developers.facebook.com → tu app → Webhooks → producto
-     "Instagram" → Callback `https://tu-app.up.railway.app/webhook`, Verify
-     Token el del .env, suscribirse al campo "messages"; la página de Facebook
-     debe estar suscrita a la app
+   - INSTAGRAM: developers.facebook.com → tu app → Casos de uso → API de
+     Instagram → «Configura los webhooks»: Callback
+     `https://tu-app.up.railway.app/webhook`, Verify Token el del .env, campos
+     "comments" y "messages". Agrega también `https://tu-app.up.railway.app/instagram/callback`
+     como URL de redirección del inicio de sesión empresarial. Luego abre
+     `https://tu-app.up.railway.app/instagram/conectar` y autoriza la cuenta: el
+     agente la suscribe a los webhooks solo. No hace falta página de Facebook
 6. (Opcional) Reporte diario: crear un cron (Railway cron o cron-job.org) que
    llame `https://tu-app.up.railway.app/reporte?token=REPORTE_TOKEN` a la hora deseada.
 7. Prueba final EN VIVO: pídele al usuario que escriba al número/cuenta del

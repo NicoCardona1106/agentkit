@@ -6,14 +6,14 @@ import os
 import secrets
 import time
 from collections import deque
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from datetime import datetime
 
 from dotenv import find_dotenv, load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import PlainTextResponse, Response
 
-from agentkit import borrador, brain, estado, humanizar, memory, reporte, voz, web
+from agentkit import borrador, brain, estado, humanizar, instagram_cuenta, memory, reporte, voz, web
 from agentkit.providers import MensajeEntrante, obtener_proveedor
 
 load_dotenv(find_dotenv(usecwd=True))  # el .env vive en la carpeta del agente (cwd), no junto al paquete
@@ -54,13 +54,23 @@ async def lifespan(app: FastAPI):
     _iniciado = datetime.utcnow()
     _arranque_monotonic = time.monotonic()
     logger.info(f"AgentKit listo — proveedor: {proveedor.__class__.__name__}")
-    yield
+    tarea_instagram = (asyncio.create_task(instagram_cuenta.bucle_renovacion())
+                       if os.getenv("IG_APP_ID") else None)
+    try:
+        yield
+    finally:
+        if tarea_instagram:
+            tarea_instagram.cancel()
+            with suppress(asyncio.CancelledError):
+                await tarea_instagram
 
 
 from agentkit import __version__
 
 app = FastAPI(title="AgentKit — WhatsApp AI Agent", version=__version__, lifespan=lifespan)
 app.include_router(web.router)  # /chat y /widget.js — canal de chat web (apagado sin WEB_CHAT_ORIGINS)
+if os.getenv("IG_APP_ID") and os.getenv("IG_APP_SECRET"):
+    app.include_router(instagram_cuenta.router)
 
 
 @app.get("/")
@@ -197,7 +207,7 @@ async def estado_agente(request: Request, token: str = ""):
     except Exception as e:  # el costo es un extra: si falla, el resto del estado sale igual
         logger.error(f"No se pudo calcular costo_usd para /estado: {e}")
         costo = None
-    return {
+    resultado = {
         "service": "agentkit",
         "version": __version__,
         "nombre": estado.nombre_bot(),
@@ -210,3 +220,11 @@ async def estado_agente(request: Request, token: str = ""):
         "errores_24h": estado.contador_errores.contar_24h(),
         "costo_usd": costo,  # {hoy, mes, desglose del mes, modelos_sin_precio} o null si falló
     }
+    if os.getenv("PROVIDER", "").lower() == "instagram":
+        cuenta = await memory.estado_cuenta_instagram()
+        resultado["instagram"] = {
+            "conectada": bool(cuenta),
+            "usuario": cuenta["usuario"] if cuenta else None,
+            "token_vence_en": cuenta["vence_en"].isoformat() + "Z" if cuenta else None,
+        }
+    return resultado

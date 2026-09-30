@@ -5,6 +5,7 @@ import os
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
+from cryptography.fernet import Fernet
 from dotenv import find_dotenv, load_dotenv
 from sqlalchemy import DateTime, Float, Integer, String, Text, delete, func, inspect, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -101,6 +102,16 @@ class UsoApi(Base):
     usd: Mapped[str] = mapped_column(String(40))
 
 
+class CuentaInstagram(Base):
+    __tablename__ = "ig_cuentas"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    ig_user_id: Mapped[str] = mapped_column(String(100), unique=True, index=True)
+    usuario: Mapped[str] = mapped_column(String(100))
+    token_cifrado: Mapped[str] = mapped_column(Text)
+    vence_en: Mapped[datetime] = mapped_column(DateTime)
+    conectada_en: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 async def inicializar_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -141,6 +152,82 @@ async def obtener_historial(telefono: str, limite: int = 20) -> list[dict]:
 async def limpiar_historial(telefono: str):
     async with async_session() as session:
         await session.execute(delete(Mensaje).where(Mensaje.telefono == telefono))
+        await session.commit()
+
+
+async def ultimo_mensaje_usuario(telefono: str) -> datetime | None:
+    async with async_session() as session:
+        return (await session.execute(select(func.max(Mensaje.timestamp)).where(
+            Mensaje.telefono == telefono, Mensaje.role == "user"))).scalar()
+
+
+# ── Cuenta de Instagram ──────────────────────────────────────
+
+def _fernet() -> Fernet:
+    clave = os.getenv("IG_TOKEN_KEY", "").strip()
+    if not clave:
+        raise RuntimeError("IG_TOKEN_KEY no configurada")
+    return Fernet(clave.encode())
+
+
+async def guardar_cuenta_instagram(ig_user_id: str, usuario: str, token: str,
+                                    vence_en: datetime):
+    token_cifrado = _fernet().encrypt(token.encode()).decode()
+    async with async_session() as session:
+        cuenta = (await session.execute(select(CuentaInstagram).where(
+            CuentaInstagram.ig_user_id == ig_user_id))).scalar_one_or_none()
+        if cuenta:
+            cuenta.usuario = usuario
+            cuenta.token_cifrado = token_cifrado
+            cuenta.vence_en = vence_en
+            cuenta.conectada_en = datetime.utcnow()
+        else:
+            session.add(CuentaInstagram(ig_user_id=ig_user_id, usuario=usuario,
+                                        token_cifrado=token_cifrado, vence_en=vence_en))
+        await session.commit()
+
+
+def _cuenta_dict(cuenta: CuentaInstagram, con_token: bool = True) -> dict:
+    datos = {
+        "ig_user_id": cuenta.ig_user_id,
+        "usuario": cuenta.usuario,
+        "vence_en": cuenta.vence_en,
+        "conectada_en": cuenta.conectada_en,
+    }
+    if con_token:
+        datos["token"] = _fernet().decrypt(cuenta.token_cifrado.encode()).decode()
+    return datos
+
+
+async def obtener_cuenta_instagram() -> dict | None:
+    async with async_session() as session:
+        cuenta = (await session.execute(select(CuentaInstagram).order_by(
+            CuentaInstagram.conectada_en.desc(), CuentaInstagram.id.desc()).limit(1))).scalar_one_or_none()
+        return _cuenta_dict(cuenta) if cuenta else None
+
+
+async def estado_cuenta_instagram() -> dict | None:
+    """Datos públicos de la conexión; nunca descifra ni devuelve el token."""
+    async with async_session() as session:
+        cuenta = (await session.execute(select(CuentaInstagram).order_by(
+            CuentaInstagram.conectada_en.desc(), CuentaInstagram.id.desc()).limit(1))).scalar_one_or_none()
+        return _cuenta_dict(cuenta, con_token=False) if cuenta else None
+
+
+async def cuentas_instagram_por_renovar(antes_de: datetime) -> list[dict]:
+    async with async_session() as session:
+        cuentas = (await session.execute(select(CuentaInstagram).where(
+            CuentaInstagram.vence_en < antes_de))).scalars().all()
+        return [_cuenta_dict(c) for c in cuentas]
+
+
+async def actualizar_token_instagram(ig_user_id: str, token: str, vence_en: datetime):
+    token_cifrado = _fernet().encrypt(token.encode()).decode()
+    async with async_session() as session:
+        cuenta = (await session.execute(select(CuentaInstagram).where(
+            CuentaInstagram.ig_user_id == ig_user_id))).scalar_one()
+        cuenta.token_cifrado = token_cifrado
+        cuenta.vence_en = vence_en
         await session.commit()
 
 
