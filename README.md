@@ -107,6 +107,36 @@ conexión se guarda cifrada y se renueva antes de vencer.
 | `IG_VERIFY_TOKEN` | — | Token elegido por ti para verificar el webhook |
 | `IG_ACCESS_TOKEN` | — | Respaldo temporal para agentes que aún usan Facebook Login |
 
+### Instagram: comenta y te llega por DM
+
+Con `PROVIDER=instagram` y la cuenta conectada, quien comenta una palabra clave
+en una publicación o reel recibe un mensaje directo fijo (respuesta privada), y
+opcionalmente una respuesta pública al comentario. Las reglas viven en
+`config/instagram.yaml` del agente; se cargan al arrancar (reinicia para
+cambiarlas). Sin el archivo, o si es inválido, no hay reglas (queda un error en
+el log) y el agente sigue atendiendo los DMs.
+
+```yaml
+reglas:
+  - palabras: ["INFO", "PRECIO"]        # sin distinguir mayúsculas ni tildes, palabra completa
+    mensaje: "¡Hola! Aquí tienes la info: https://…"
+    respuesta_publica: "¡Te escribí por DM! 📩"   # opcional
+    publicaciones: todas                # o una lista de media_id
+```
+
+Cada comentario queda en la tabla `ig_comentarios` con su resultado (`enviado`,
+`omitido` con su motivo, `error` o `en_cola`) y se borra a los 12 meses. El texto
+del comentario nunca llega al modelo. Si el DM sale, se crea un lead con origen
+`instagram:comentario:PALABRA` y se avisa al equipo; si la persona responde, el
+agente conversa con ella normalmente. `GET /estado` suma
+`instagram.comentarios_hoy` (`enviados`, `omitidos`, `errores`, `en_cola`).
+
+Límites de Meta: 1 respuesta privada por comentario, solo dentro de los 7 días
+siguientes al comentario y hasta 750 por hora (al pasarlo, los comentarios quedan
+en cola, se avisa al equipo y se reintentan cada 5 minutos mientras no venza el
+plazo). Si Meta falla (5xx o timeout) se reintenta 2 veces; tras 3 errores
+seguidos se avisa al equipo.
+
 Cada llamada a Claude, a la transcripción y a la voz queda en la tabla
 `uso_api` con su costo en USD (precios en `agentkit/precios.py`; para
 corregir uno sin tocar código, crea `config/precios.json`, p. ej.

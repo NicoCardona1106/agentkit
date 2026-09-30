@@ -8,6 +8,7 @@ from decimal import Decimal
 from cryptography.fernet import Fernet
 from dotenv import find_dotenv, load_dotenv
 from sqlalchemy import DateTime, Float, Integer, String, Text, delete, func, inspect, select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -110,6 +111,22 @@ class CuentaInstagram(Base):
     token_cifrado: Mapped[str] = mapped_column(Text)
     vence_en: Mapped[datetime] = mapped_column(DateTime)
     conectada_en: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class ComentarioInstagram(Base):
+    """Un comentario de Instagram recibido por webhook y qué se hizo con él (una fila por comment_id)."""
+    __tablename__ = "ig_comentarios"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    comment_id: Mapped[str] = mapped_column(String(100), unique=True, index=True)
+    media_id: Mapped[str] = mapped_column(String(100), default="")
+    igsid: Mapped[str] = mapped_column(String(100), default="")
+    usuario: Mapped[str] = mapped_column(String(100), default="")
+    texto: Mapped[str] = mapped_column(Text, default="")  # recortado a 1000; nunca llega al modelo
+    regla: Mapped[str] = mapped_column(String(100), default="")  # palabra que coincidió
+    resultado: Mapped[str] = mapped_column(String(20), default="pendiente")  # enviado | omitido | error | en_cola
+    motivo: Mapped[str] = mapped_column(String(100), default="")
+    creado_en: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)  # hora del comentario
+    procesado_en: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 async def inicializar_db():
@@ -229,6 +246,60 @@ async def actualizar_token_instagram(ig_user_id: str, token: str, vence_en: date
         cuenta.token_cifrado = token_cifrado
         cuenta.vence_en = vence_en
         await session.commit()
+
+
+# ── Comentarios de Instagram ─────────────────────────────────
+
+async def insertar_comentario(comment_id: str, media_id: str, igsid: str, usuario: str,
+                              texto: str, creado_en: datetime) -> bool:
+    """Guarda el comentario; False si ese comment_id ya existía (webhook repetido)."""
+    try:
+        async with async_session() as session:
+            session.add(ComentarioInstagram(comment_id=comment_id, media_id=media_id, igsid=igsid,
+                                            usuario=usuario, texto=texto[:1000], creado_en=creado_en))
+            await session.commit()
+        return True
+    except IntegrityError:
+        return False
+
+
+async def actualizar_comentario(comment_id: str, resultado: str, motivo: str = "", regla: str | None = None):
+    async with async_session() as session:
+        c = (await session.execute(select(ComentarioInstagram).where(
+            ComentarioInstagram.comment_id == comment_id))).scalar_one()
+        c.resultado = resultado
+        c.motivo = motivo
+        if regla is not None:
+            c.regla = regla
+        c.procesado_en = None if resultado == "en_cola" else datetime.utcnow()
+        await session.commit()
+
+
+async def comentarios_en_cola(limite: int = 200) -> list[dict]:
+    async with async_session() as session:
+        filas = (await session.execute(select(ComentarioInstagram).where(
+            ComentarioInstagram.resultado == "en_cola").order_by(ComentarioInstagram.id).limit(limite))).scalars().all()
+        return [{"comment_id": c.comment_id, "media_id": c.media_id, "igsid": c.igsid, "usuario": c.usuario,
+                 "texto": c.texto, "creado_en": c.creado_en} for c in filas]
+
+
+async def contar_comentarios_hoy() -> dict:
+    """Comentarios cerrados hoy (UTC) por resultado, más todos los que siguen en cola."""
+    hoy = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    async with async_session() as session:
+        por_resultado = dict((await session.execute(
+            select(ComentarioInstagram.resultado, func.count()).where(
+                (ComentarioInstagram.procesado_en >= hoy) | (ComentarioInstagram.resultado == "en_cola")
+            ).group_by(ComentarioInstagram.resultado))).all())
+    return {"enviados": por_resultado.get("enviado", 0), "omitidos": por_resultado.get("omitido", 0),
+            "errores": por_resultado.get("error", 0), "en_cola": por_resultado.get("en_cola", 0)}
+
+
+async def borrar_comentarios_antiguos(antes_de: datetime) -> int:
+    async with async_session() as session:
+        r = await session.execute(delete(ComentarioInstagram).where(ComentarioInstagram.creado_en < antes_de))
+        await session.commit()
+        return r.rowcount
 
 
 # ── Cliente (memoria de largo plazo) ──────────────────────────

@@ -13,7 +13,7 @@ from dotenv import find_dotenv, load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import PlainTextResponse, Response
 
-from agentkit import borrador, brain, estado, humanizar, instagram_cuenta, memory, reporte, voz, web
+from agentkit import borrador, brain, estado, humanizar, instagram_comentarios, instagram_cuenta, memory, reporte, voz, web
 from agentkit.providers import MensajeEntrante, obtener_proveedor
 
 load_dotenv(find_dotenv(usecwd=True))  # el .env vive en la carpeta del agente (cwd), no junto al paquete
@@ -54,15 +54,16 @@ async def lifespan(app: FastAPI):
     _iniciado = datetime.utcnow()
     _arranque_monotonic = time.monotonic()
     logger.info(f"AgentKit listo — proveedor: {proveedor.__class__.__name__}")
-    tarea_instagram = (asyncio.create_task(instagram_cuenta.bucle_renovacion())
-                       if os.getenv("IG_APP_ID") else None)
+    tareas_instagram = ([asyncio.create_task(instagram_cuenta.bucle_renovacion()),
+                         asyncio.create_task(instagram_comentarios.bucle_comentarios())]
+                        if os.getenv("IG_APP_ID") else [])
     try:
         yield
     finally:
-        if tarea_instagram:
-            tarea_instagram.cancel()
+        for tarea in tareas_instagram:
+            tarea.cancel()
             with suppress(asyncio.CancelledError):
-                await tarea_instagram
+                await tarea
 
 
 from agentkit import __version__
@@ -169,6 +170,9 @@ async def webhook_handler(request: Request):
         _procesados.append(msg.mensaje_id)
         # Background: el proveedor reintenta el webhook si tardamos; Claude puede tardar >15s
         asyncio.create_task(procesar_mensaje(msg))
+    if hasattr(proveedor, "parsear_comentarios"):  # Instagram: cambios `comments` del mismo webhook
+        for evento in proveedor.parsear_comentarios(await request.json()):
+            asyncio.create_task(instagram_comentarios.procesar_comentario(evento))
     return {"status": "ok"}
 
 
@@ -226,5 +230,6 @@ async def estado_agente(request: Request, token: str = ""):
             "conectada": bool(cuenta),
             "usuario": cuenta["usuario"] if cuenta else None,
             "token_vence_en": cuenta["vence_en"].isoformat() + "Z" if cuenta else None,
+            "comentarios_hoy": await memory.contar_comentarios_hoy(),
         }
     return resultado

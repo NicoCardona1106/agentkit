@@ -278,6 +278,269 @@ async def _test_instagram_estado_sin_token():
     os.environ.pop("REPORTE_TOKEN")
 
 
+# ── Instagram: comentario con palabra clave → DM (A2) ─────────
+
+_REGLAS_YAML = """
+reglas:
+  - palabras: ["INFO", "Precio"]
+    mensaje: "¡Hola! Aquí tienes la info: https://ejemplo.test"
+    respuesta_publica: "¡Te escribí por DM!"
+    publicaciones: todas
+  - palabras: [PROMO]
+    mensaje: "Promo solo en esta publicación"
+    publicaciones: ["media-promo"]
+"""
+
+
+def _cargar_reglas_de_prueba(contenido: str = _REGLAS_YAML):
+    from agentkit import instagram_comentarios
+
+    ruta = os.path.join(tempfile.gettempdir(), f"ig_reglas_{os.urandom(4).hex()}.yaml")
+    with open(ruta, "w", encoding="utf-8") as f:
+        f.write(contenido)
+    try:
+        return instagram_comentarios.cargar_reglas(ruta)
+    finally:
+        os.remove(ruta)
+
+
+def test_instagram_comentarios_normalizar_y_palabra_completa():
+    from agentkit import instagram_comentarios as ic
+
+    assert ic.normalizar("Información áéíóú") == "INFORMACION AEIOU"
+    assert len(_cargar_reglas_de_prueba()) == 2
+    for texto in ("info", "INFO", "Info!", "quiero info por favor", "¿Precio?"):
+        assert ic.buscar_regla(texto, "media-1"), texto
+    for texto in ("información", "informacion", "infosec", "sin palabra"):
+        assert ic.buscar_regla(texto, "media-1") is None, texto
+    assert ic.buscar_regla("promo", "media-1") is None  # regla limitada a otra publicación
+    assert ic.buscar_regla("promo", "media-promo")["mensaje"] == "Promo solo en esta publicación"
+
+    # archivo ausente o inválido: cero reglas y sin excepción
+    assert ic.cargar_reglas("no-existe/instagram.yaml") == []
+    assert _cargar_reglas_de_prueba("reglas: [{palabras: [X]}]") == []  # falta el mensaje
+    assert _cargar_reglas_de_prueba("reglas: [") == []
+    assert ic.buscar_regla("info", "media-1") is None
+
+
+async def _test_instagram_comentarios_flujo():
+    import time
+    from datetime import datetime, timedelta
+    from unittest import mock
+
+    from fastapi.testclient import TestClient
+    from sqlalchemy import select
+
+    from agentkit import brain, instagram_comentarios as ic, memory
+    from agentkit.memory import ComentarioInstagram, Lead, async_session
+    import agentkit.main as main_mod
+
+    await memory.inicializar_db()
+    _cargar_reglas_de_prueba()
+    posts, avisos = [], []
+    respuestas = []  # códigos HTTP que devuelve el falso Meta, en orden; vacío = 200
+
+    class Respuesta:
+        def __init__(self, status): self.status_code = status
+
+    class Cliente:
+        def __init__(self, *a, **k): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def post(self, url, **kwargs):
+            posts.append((url, kwargs))
+            return Respuesta(respuestas.pop(0) if respuestas else 200)
+
+    async def token_conectado(): return ("ig-negocio", "token-login")
+
+    async def aviso(_proveedor, texto):
+        avisos.append(texto)
+        return True
+
+    def evento(cid, texto, desde=None, media="media-1", parent=None, hace=0, usuario="ana"):
+        ev = {"id": cid, "text": texto, "from": {"id": desde or ("igsid-" + cid), "username": usuario},
+              "media": {"id": media}, "entry_id": "ig-negocio", "entry_time": int(time.time() - hace)}
+        if parent:
+            ev["parent_id"] = parent
+        return ev
+
+    async def fila(cid):
+        async with async_session() as session:
+            return (await session.execute(select(ComentarioInstagram).where(
+                ComentarioInstagram.comment_id == cid))).scalar_one()
+
+    def mensajes_a_meta():
+        return [p for p in posts if p[0].endswith("/messages")]
+
+    sufijo = os.urandom(4).hex()
+    os.environ.update({"PROVIDER": "instagram", "REPORTE_TOKEN": "token-prueba"})
+    brain_llamado = []
+
+    async def brain_prohibido(*a, **k):
+        brain_llamado.append(a)
+        raise AssertionError("el comentario no debe llegar al modelo")
+
+    def estado_comentarios():
+        r = TestClient(main_mod.app).get("/estado", headers={"X-Reporte-Token": "token-prueba"})
+        return r.json()["instagram"]["comentarios_hoy"]
+
+    with mock.patch.object(ic.instagram_cuenta, "token_activo", token_conectado), \
+         mock.patch.object(ic.httpx, "AsyncClient", Cliente), \
+         mock.patch.object(ic.notificar, "notificar_equipo", aviso), \
+         mock.patch.object(ic, "ESPERAS", (0, 0)), \
+         mock.patch.object(brain, "generar_respuesta", brain_prohibido):
+        base = estado_comentarios()
+        assert set(base) == {"enviados", "omitidos", "errores", "en_cola"}
+
+        # 1) DM con recipient.comment_id + Authorization; tres webhooks iguales dan un solo DM (RNF-04)
+        cid = f"c-ok-{sufijo}"
+        ev = evento(cid, "Info por favor!", usuario="ana")
+        for _ in range(3):
+            await ic.procesar_comentario(dict(ev))
+        dms = mensajes_a_meta()
+        assert len(dms) == 1, posts
+        assert dms[0][0].endswith("/ig-negocio/messages")
+        assert dms[0][1]["json"] == {"recipient": {"comment_id": cid},
+                                     "message": {"text": "¡Hola! Aquí tienes la info: https://ejemplo.test"}}
+        assert dms[0][1]["headers"] == {"Authorization": "Bearer token-login"}
+        # la regla INFO trae respuesta pública: una sola
+        publicas = [p for p in posts if p[0].endswith(f"/{cid}/replies")]
+        assert len(publicas) == 1 and publicas[0][1]["params"] == {"message": "¡Te escribí por DM!"}
+        f = await fila(cid)
+        assert (f.resultado, f.regla, f.usuario, f.procesado_en is not None) == ("enviado", "INFO", "ana", True)
+        # historia, lead y aviso
+        igsid = "igsid-" + cid
+        assert await memory.obtener_historial(igsid) == [
+            {"role": "assistant", "content": "¡Hola! Aquí tienes la info: https://ejemplo.test"}]
+        cliente = await memory.obtener_cliente(igsid)
+        assert cliente["nombre"] == "ana" and "«INFO»" in cliente["notas"]
+        async with async_session() as session:
+            leads = (await session.execute(select(Lead).where(Lead.telefono == igsid))).scalars().all()
+        assert len(leads) == 1 and "instagram:comentario:INFO" in leads[0].interes
+        assert leads[0].contacto == "instagram:@ana"
+        assert len(avisos) == 1 and "@ana" in avisos[0]
+
+        # 2) sin respuesta pública en la regla: no se publica nada (PROMO no la trae)
+        posts.clear()
+        await ic.procesar_comentario(evento(f"c-promo-{sufijo}", "promo", media="media-promo"))
+        assert len(posts) == 1 and posts[0][0].endswith("/ig-negocio/messages")
+
+        # 3) omitidos: propio, respuesta a comentario, de hace 8 días, sin regla
+        posts.clear()
+        casos = [
+            (evento(f"c-propio-{sufijo}", "info", desde="ig-negocio"), "propio"),
+            (evento(f"c-resp-{sufijo}", "info", parent="c-padre"), "respuesta_a_comentario"),
+            (evento(f"c-viejo-{sufijo}", "info", hace=8 * 86400), "mas_de_7_dias"),
+            (evento(f"c-nada-{sufijo}", "qué lindo"), "sin_regla"),
+        ]
+        for ev, _ in casos:
+            await ic.procesar_comentario(ev)
+        assert posts == []
+        for ev, motivo in casos:
+            f = await fila(ev["id"])
+            assert (f.resultado, f.motivo) == ("omitido", motivo), (ev["id"], f.resultado, f.motivo)
+
+        # 4) límite por hora: el 750.º sale, el 751.º queda en cola y avisa una sola vez
+        posts.clear(); avisos.clear()
+        cupo_previo = dict(ic._cupo)
+        ic._cupo.update(hora=datetime.utcnow().strftime("%Y%m%d%H"), n=ic.LIMITE_HORA - 1, avisada=False)
+        await ic.procesar_comentario(evento(f"c-750-{sufijo}", "info"))
+        await ic.procesar_comentario(evento(f"c-751-{sufijo}", "info"))
+        await ic.procesar_comentario(evento(f"c-752-{sufijo}", "info"))
+        assert (await fila(f"c-750-{sufijo}")).resultado == "enviado"
+        for n in (751, 752):
+            f = await fila(f"c-{n}-{sufijo}")
+            assert (f.resultado, f.motivo, f.procesado_en) == ("en_cola", "limite_750_hora", None)
+        assert len([a for a in avisos if "750" in a]) == 1
+        assert len(mensajes_a_meta()) == 1
+        # el bucle los reprocesa cuando hay cupo otra vez
+        ic._cupo.update(hora=datetime.utcnow().strftime("%Y%m%d%H"), n=0, avisada=False)
+        await ic.reprocesar_cola()
+        assert (await fila(f"c-751-{sufijo}")).resultado == "enviado"
+        assert (await fila(f"c-752-{sufijo}")).resultado == "enviado"
+        ic._cupo.update(cupo_previo)
+
+        # 5) reintento tras un 500 y error tras 3 fallos, con aviso a los 3 errores seguidos
+        posts.clear(); avisos.clear()
+        respuestas[:] = [500, 200]
+        await ic.procesar_comentario(evento(f"c-reintento-{sufijo}", "info"))
+        assert (await fila(f"c-reintento-{sufijo}")).resultado == "enviado"
+        assert len(mensajes_a_meta()) == 2
+
+        posts.clear(); avisos.clear()
+        ic._errores_seguidos = 0
+        for n in range(3):
+            respuestas[:] = [500, 500, 500]
+            await ic.procesar_comentario(evento(f"c-error{n}-{sufijo}", "info"))
+        assert len(mensajes_a_meta()) == 9  # 3 intentos por comentario
+        f = await fila(f"c-error0-{sufijo}")
+        assert (f.resultado, f.motivo) == ("error", "http_500")
+        assert len(avisos) == 1 and "3 respuestas privadas" in avisos[0]
+        respuestas[:] = [400]  # un 4xx no se reintenta
+        posts.clear()
+        await ic.procesar_comentario(evento(f"c-400-{sufijo}", "info"))
+        assert len(posts) == 1 and (await fila(f"c-400-{sufijo}")).motivo == "http_400"
+
+        # 6) el texto del comentario nunca llega al modelo
+        assert brain_llamado == [] and not hasattr(ic, "brain")
+
+        # 7) /estado con los conteos (diferencias contra el llamado base)
+        final = estado_comentarios()
+        assert final["enviados"] - base["enviados"] == 6, (base, final)  # ok, promo, 750, 751, 752, reintento
+        assert final["omitidos"] - base["omitidos"] == 4, (base, final)
+        assert final["errores"] - base["errores"] == 4, (base, final)  # 3 con 500 + 1 con 400
+        assert final["en_cola"] == base["en_cola"], (base, final)
+
+        # 8) borrado de lo de más de 12 meses
+        viejo = f"c-antiguo-{sufijo}"
+        assert await memory.insertar_comentario(viejo, "m", "i", "u", "info", datetime.utcnow() - timedelta(days=400))
+        assert await memory.borrar_comentarios_antiguos(datetime.utcnow() - timedelta(days=365)) >= 1
+        assert await memory.insertar_comentario(viejo, "m", "i", "u", "info", datetime.utcnow())  # ya no existía
+    os.environ.pop("REPORTE_TOKEN", None)
+
+
+async def _test_instagram_webhook_comentarios_y_mensajes():
+    """Un mismo cuerpo con `changes` y `messaging` reparte cada parte a su flujo; Meta no cambia."""
+    import json
+    from unittest import mock
+
+    from agentkit.providers.instagram import ProveedorInstagram
+    from agentkit.providers.meta import ProveedorMeta
+    import agentkit.main as main_mod
+
+    assert not hasattr(ProveedorMeta(), "parsear_comentarios")
+    os.environ["IG_APP_SECRET"] = "secreto-ig"
+    mid = os.urandom(4).hex()
+    cuerpo = json.dumps({"entry": [{"id": "ig-negocio", "time": 1_700_000_000,
+        "changes": [{"field": "comments", "value": {"id": "com-1", "text": "info", "from": {"id": "u1"}}},
+                    {"field": "mentions", "value": {"id": "otro"}}],
+        "messaging": [{"sender": {"id": "u2"}, "message": {"mid": mid, "text": "hola"}}]}]}).encode()
+
+    class Peticion:
+        headers = {"X-Hub-Signature-256": "sha256=" + hmac.new(b"secreto-ig", cuerpo, hashlib.sha256).hexdigest()}
+        async def body(self): return cuerpo
+        async def json(self): return json.loads(cuerpo)
+
+    comentarios, mensajes = [], []
+
+    async def fake_comentario(ev): comentarios.append(ev)
+    async def fake_mensaje(msg): mensajes.append(msg)
+
+    anterior = main_mod.proveedor
+    main_mod.proveedor = ProveedorInstagram()
+    try:
+        with mock.patch.object(main_mod.instagram_comentarios, "procesar_comentario", fake_comentario), \
+             mock.patch.object(main_mod, "procesar_mensaje", fake_mensaje):
+            assert await main_mod.webhook_handler(Peticion()) == {"status": "ok"}
+            await asyncio.sleep(0.05)  # deja correr las tareas en segundo plano
+    finally:
+        main_mod.proveedor = anterior
+        os.environ.pop("IG_APP_SECRET", None)
+    assert len(comentarios) == 1 and comentarios[0]["id"] == "com-1"
+    assert comentarios[0]["entry_id"] == "ig-negocio" and comentarios[0]["entry_time"] == 1_700_000_000
+    assert len(mensajes) == 1 and mensajes[0].telefono == "u2" and mensajes[0].texto == "hola"
+
+
 def test_pagos_seleccion():
     from agentkit import pagos
 
@@ -1590,6 +1853,9 @@ if __name__ == "__main__":
     asyncio.run(_test_instagram_envio_24h_y_respaldo())
     test_instagram_rutas_apagadas()
     asyncio.run(_test_instagram_estado_sin_token())
+    test_instagram_comentarios_normalizar_y_palabra_completa()
+    asyncio.run(_test_instagram_comentarios_flujo())
+    asyncio.run(_test_instagram_webhook_comentarios_y_mensajes())
     test_pagos_seleccion()
     test_voz_config()
     test_tts()

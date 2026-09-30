@@ -46,8 +46,6 @@ class ProveedorInstagram(ProveedorWhatsApp):
         body = await request.json()
         mensajes = []
         for entry in body.get("entry", []):
-            if entry.get("changes"):
-                logger.debug("Webhook de cambios de Instagram ignorado; se procesará en A2")
             for evento in entry.get("messaging", []):
                 msg = evento.get("message", {})
                 if not msg or msg.get("is_echo"):  # is_echo = mensajes enviados por el propio agente
@@ -66,6 +64,12 @@ class ProveedorInstagram(ProveedorWhatsApp):
                     audio_ref=audio_ref,
                 ))
         return mensajes
+
+    def parsear_comentarios(self, body: dict) -> list[dict]:
+        """Cambios `comments` del webhook: el `value` más el ID de la cuenta y la hora del entry."""
+        return [{**cambio["value"], "entry_id": entry.get("id"), "entry_time": entry.get("time")}
+                for entry in body.get("entry", []) for cambio in entry.get("changes", [])
+                if cambio.get("field") == "comments" and isinstance(cambio.get("value"), dict)]
 
     async def enviar_mensaje(self, telefono: str, mensaje: str) -> bool:
         guardado = await memory.ultimo_mensaje_usuario(telefono)

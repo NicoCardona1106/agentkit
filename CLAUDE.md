@@ -178,6 +178,8 @@ PREGUNTA 9: ¿Por dónde atenderá tu agente? EL USUARIO ELIGE — tú solo reco
                (marcas, creadores, tiendas con perfil activo). Usa Instagram
                Login con una cuenta profesional, sin página de Facebook. Ojo: solo se
                puede responder dentro de las 24h del último mensaje del cliente.
+               Si elige Instagram, ofrece las reglas de comentarios (`config/instagram.yaml`):
+               quien comenta una palabra clave («INFO») recibe un DM con lo prometido.
 
             Guía rápida: negocio local / ventas por WhatsApp → 1 para probar y
             migrar a 2; marca con comunidad en Instagram → 3 (y puede sumar
