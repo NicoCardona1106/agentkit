@@ -9,7 +9,13 @@ import os
 import httpx
 from fastapi import Request
 
+from agentkit.privacidad import host_permitido
 from agentkit.providers.base import MensajeEntrante, ProveedorWhatsApp
+
+# Los medios de Twilio viven en api.twilio.com (y redirigen a su CDN). Las credenciales de la cuenta
+# NUNCA salen hacia otro host: si falta PUBLIC_URL la firma no se valida y MediaUrl0 lo escribe
+# cualquiera (informe de seguridad 2026-10-03, hallazgo 1).
+DOMINIOS_MEDIA = ("twilio.com",)
 
 logger = logging.getLogger("agentkit")
 
@@ -65,7 +71,7 @@ class ProveedorTwilio(ProveedorWhatsApp):
         async with httpx.AsyncClient() as client:
             r = await client.post(url, data=data, auth=(self.account_sid, self.auth_token))
             if r.status_code != 201:
-                logger.error(f"Error Twilio: {r.status_code} — {r.text}")
+                logger.error(f"Error Twilio: HTTP {r.status_code}")  # el cuerpo trae el número del cliente
             return r.status_code == 201
 
     async def enviar_audio_url(self, telefono: str, audio_url: str) -> bool:
@@ -76,11 +82,14 @@ class ProveedorTwilio(ProveedorWhatsApp):
         async with httpx.AsyncClient() as client:
             r = await client.post(url, data=data, auth=(self.account_sid, self.auth_token))
             if r.status_code != 201:
-                logger.error(f"Error Twilio (audio): {r.status_code} — {r.text}")
+                logger.error(f"Error Twilio (audio): HTTP {r.status_code}")
             return r.status_code == 201
 
     async def descargar_audio(self, audio_ref: str) -> bytes | None:
         """En Twilio el audio_ref es la URL del media (requiere auth básica)."""
+        if not host_permitido(audio_ref, DOMINIOS_MEDIA):
+            logger.warning("Twilio: audio con URL fuera de twilio.com — no se descarga (ni se envían credenciales)")
+            return None
         async with httpx.AsyncClient(follow_redirects=True) as client:
             r = await client.get(audio_ref, auth=(self.account_sid, self.auth_token))
             return r.content if r.status_code == 200 else None

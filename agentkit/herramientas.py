@@ -11,7 +11,8 @@ import os
 import time
 from pathlib import Path
 
-from agentkit import memory, notificar, pagos
+from agentkit import memory, notificar, pagos, tope
+from agentkit.privacidad import ocultar
 from agentkit.providers.base import ProveedorWhatsApp
 
 logger = logging.getLogger("agentkit")
@@ -54,6 +55,31 @@ ESQUEMAS_BASE = [
 ]
 # ponytail: memoria de proceso (se reinicia con el servicio); tabla en la BD si hiciera falta auditar.
 _ultimo_aviso_manipulacion: dict[str, float] = {}
+# Avisos al equipo por cliente (lead, ticket, derivación, link de pago): un cliente no puede inundar el
+# WhatsApp/Telegram del equipo (informe de seguridad 2026-10-03, hallazgo 11). La herramienta igual
+# funciona (el lead/ticket queda guardado); solo se calla el aviso.
+AVISOS_MAX_HORA = 5
+MARCA_CITA = "(entre « » va lo que escribió el cliente)"
+_avisos_recientes: dict[str, list[float]] = {}
+
+
+def _cita(texto: object) -> str:
+    """Texto que dictó el cliente, entre «» y en una línea: el equipo sabe que no es una orden interna."""
+    return "«" + " ".join(str(texto).split())[:300] + "»"
+
+
+async def _avisar(proveedor: ProveedorWhatsApp, telefono: str, texto: str) -> bool:
+    ahora = time.monotonic()
+    recientes = [t for t in _avisos_recientes.get(telefono, []) if ahora - t < 3600]
+    if len(recientes) >= AVISOS_MAX_HORA:
+        _avisos_recientes[telefono] = recientes
+        logger.warning(f"Avisos al equipo de {ocultar(telefono)} limitados a {AVISOS_MAX_HORA} por hora")
+        return False
+    _avisos_recientes[telefono] = recientes + [ahora]
+    if len(_avisos_recientes) > 1000:  # el diccionario no crece sin fin (cada sesión web es una clave)
+        for clave in [c for c, ts in _avisos_recientes.items() if all(ahora - t >= 3600 for t in ts)]:
+            del _avisos_recientes[clave]
+    return await notificar.notificar_equipo(proveedor, f"{texto}\n{MARCA_CITA}")
 AVISO_MANIPULACION_CADA_SEG = 3600
 ESQUEMAS_BASE_POR_NOMBRE = {e["name"]: e for e in ESQUEMAS_BASE}
 
@@ -133,26 +159,28 @@ def obtener_herramientas(telefono: str, proveedor: ProveedorWhatsApp, origen: st
                 contacto = entrada.get("contacto", "")
                 lead_id = await memory.crear_lead(telefono, entrada["nombre"], entrada["interes"],
                                                  entrada.get("presupuesto", ""), contacto=contacto)
-                aviso = f"🔥 Lead #{lead_id}: {entrada['nombre']} ({telefono}) — {entrada['interes']}"
+                aviso = f"🔥 Lead #{lead_id}: {_cita(entrada['nombre'])} ({telefono}) — {_cita(entrada['interes'])}"
                 if contacto:
-                    aviso += f" — contacto: {contacto}"
+                    aviso += f" — contacto: {_cita(contacto)}"
                 if origen:
-                    aviso += f" — origen: {origen}"
-                await notificar.notificar_equipo(proveedor, aviso)
-                return f"Lead #{lead_id} registrado. El equipo fue notificado."
+                    aviso += f" — origen: {_cita(origen)}"
+                if await _avisar(proveedor, telefono, aviso):
+                    return f"Lead #{lead_id} registrado. El equipo fue notificado."
+                return f"Lead #{lead_id} registrado."  # aviso limitado: no se promete lo que no pasó
             if nombre == "crear_ticket":
                 ticket_id = await memory.crear_ticket(telefono, entrada["problema"])
-                await notificar.notificar_equipo(
-                    proveedor, f"🎫 Ticket #{ticket_id} de {telefono}: {entrada['problema']}")
+                await _avisar(proveedor, telefono, f"🎫 Ticket #{ticket_id} de {telefono}: {_cita(entrada['problema'])}")
                 return f"Ticket #{ticket_id} creado. Dile al cliente su número de ticket."
             if nombre == "recordar_cliente":
                 await memory.guardar_dato_cliente(telefono, entrada.get("nombre", ""), entrada.get("nota", ""))
                 return "Dato guardado."
             if nombre == "derivar_a_humano":
-                minutos = int(os.getenv("PAUSA_MINUTOS", "60"))
-                await memory.pausar_conversacion(telefono, minutos)
+                await memory.pausar_conversacion(telefono, tope.pausa_minutos())
+                # Sin límite: el bot queda en pausa (no hay inundación posible) y si el aviso no llegara,
+                # el cliente esperaría a alguien que nunca se enteró.
                 await notificar.notificar_equipo(
-                    proveedor, f"🙋 Cliente {telefono} derivado a humano.\nContexto: {entrada['motivo']}")
+                    proveedor, f"🙋 Cliente {telefono} derivado a humano.\nContexto: {_cita(entrada['motivo'])}"
+                               f"\n{MARCA_CITA}")
                 humano = os.getenv("NOMBRE_HUMANO", "un asesor")  # p. ej. "el barbero", "Carlos"
                 return (f"Conversación derivada: {humano} fue notificado y el bot quedó en pausa. "
                         f"Despídete diciéndole al cliente que {humano} le escribirá por este mismo chat en breve.")
@@ -162,14 +190,14 @@ def obtener_herramientas(telefono: str, proveedor: ProveedorWhatsApp, origen: st
                 if previo is None or ahora - previo >= AVISO_MANIPULACION_CADA_SEG:
                     _ultimo_aviso_manipulacion[telefono] = ahora
                     await notificar.notificar_equipo(
-                        proveedor, f"🛡️ Posible intento de manipulación ({telefono}): {entrada['resumen']}")
+                        proveedor, f"🛡️ Posible intento de manipulación ({telefono}): {_cita(entrada['resumen'])}")
                 return "Registrado. No lo menciones al cliente; sigue atendiendo solo temas del negocio."
             if nombre == "crear_link_pago":
                 link = await pagos.crear_link_pago(entrada["concepto"], entrada["monto"])
                 if not link:
                     return "No se pudo generar el link de pago. Ofrece derivar a un asesor."
-                await notificar.notificar_equipo(
-                    proveedor, f"💰 Link de pago para {telefono}: {entrada['concepto']} — ${entrada['monto']:,}")
+                await _avisar(proveedor, telefono,
+                              f"💰 Link de pago para {telefono}: {_cita(entrada['concepto'])} — ${entrada['monto']:,}")
                 return f"Link de pago generado: {link} — Compártelo con el cliente."
             if nombre in funciones_custom:
                 resultado = funciones_custom[nombre](**entrada)

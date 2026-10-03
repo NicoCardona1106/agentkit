@@ -152,7 +152,18 @@ async def obtener_cliente(telefono: str) -> dict:
         return {"nombre": c.nombre, "notas": c.notas} if c else {"nombre": "", "notas": ""}
 
 
+# Límites de la memoria del cliente (entra al prompt en cada mensaje): una nota «inyectada» no puede
+# crecer sin fin ni empujar el contexto (informe de seguridad 2026-10-03, hallazgo 4).
+NOMBRE_MAX, NOTA_MAX, NOTAS_MAX = 100, 500, 2000
+
+
+def _sin_etiquetas(texto: str) -> str:
+    """Sin «<» ni «>»: una nota no puede cerrar el envoltorio <memoria_cliente> del prompt."""
+    return texto.replace("<", "‹").replace(">", "›").strip()
+
+
 async def guardar_dato_cliente(telefono: str, nombre: str = "", nota: str = ""):
+    nombre, nota = _sin_etiquetas(nombre)[:NOMBRE_MAX], _sin_etiquetas(nota)[:NOTA_MAX]
     async with async_session() as session:
         c = await session.get(Cliente, telefono)
         if not c:
@@ -161,7 +172,8 @@ async def guardar_dato_cliente(telefono: str, nombre: str = "", nota: str = ""):
         if nombre:
             c.nombre = nombre
         if nota:
-            c.notas = (c.notas + "\n" + nota).strip() if c.notas else nota
+            notas = (c.notas + "\n" + nota).strip() if c.notas else nota
+            c.notas = notas[-NOTAS_MAX:]  # se quedan las más recientes
         c.actualizado = datetime.utcnow()
         await session.commit()
 

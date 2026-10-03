@@ -8,6 +8,7 @@ import os
 import re
 
 from agentkit import humanizar, memory
+from agentkit.privacidad import ocultar
 from agentkit.providers.base import ProveedorWhatsApp
 
 logger = logging.getLogger("agentkit")
@@ -41,7 +42,7 @@ async def proponer(proveedor: ProveedorWhatsApp, telefono: str,
         f"Responde: *ok {bid}* envía · *no {bid}* descarta · "
         f"*editar {bid} <texto>* envía tu versión"
     ))
-    logger.info(f"Borrador #{bid} para {telefono} pendiente de aprobación")
+    logger.info(f"Borrador #{bid} para {ocultar(telefono)} pendiente de aprobación")
 
 
 async def comando_admin(proveedor: ProveedorWhatsApp, texto: str):

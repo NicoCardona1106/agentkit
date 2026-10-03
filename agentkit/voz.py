@@ -278,7 +278,8 @@ async def _sintetizar_openai_audio(texto: str, modelo: str) -> bytes | None:
     audio = datos["choices"][0]["message"]["audio"]
     dicho = audio.get("transcript", "")
     if not es_fiel(texto, dicho):
-        logger.warning(f"gpt-audio cambió el texto, se descarta el audio. Pedido: {texto!r} — dijo: {dicho!r}")
+        # Sin el texto: es la respuesta al cliente (Ley 1581). Solo los largos, para diagnosticar.
+        logger.warning(f"gpt-audio cambió el texto ({len(texto)} → {len(dicho)} caracteres), se descarta el audio")
         return None
     return base64.b64decode(audio["data"])
 

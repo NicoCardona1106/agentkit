@@ -10,10 +10,23 @@ import os
 import httpx
 from fastapi import Request
 
+from agentkit.privacidad import host_permitido
 from agentkit.providers.base import MensajeEntrante, ProveedorWhatsApp
 from agentkit.providers.meta import firma_meta_valida
 
 logger = logging.getLogger("agentkit")
+# Hosts de los adjuntos de Instagram: solo los CDNs de Meta (no facebook.com/instagram.com, que tienen
+# redirecciones abiertas). Se revisa CADA salto, también las redirecciones.
+DOMINIOS_MEDIA = ("fbsbx.com", "fbcdn.net", "cdninstagram.com")
+
+
+class HostNoPermitido(Exception):
+    pass
+
+
+async def _solo_cdn_de_meta(request: httpx.Request):
+    if not host_permitido(str(request.url), DOMINIOS_MEDIA):
+        raise HostNoPermitido(request.url.host)
 
 
 class ProveedorInstagram(ProveedorWhatsApp):
@@ -69,7 +82,16 @@ class ProveedorInstagram(ProveedorWhatsApp):
             return r.status_code == 200
 
     async def descargar_audio(self, audio_ref: str) -> bytes | None:
-        """En Instagram el audio_ref ya es una URL de CDN descargable."""
-        async with httpx.AsyncClient(follow_redirects=True) as client:
-            r = await client.get(audio_ref)
-            return r.content if r.status_code == 200 else None
+        """En Instagram el audio_ref ya es una URL de CDN descargable. Solo CDNs de Meta: si falta
+        IG_APP_SECRET la URL la puede escribir cualquiera (petición a la red interna del servidor)."""
+        if not host_permitido(audio_ref, DOMINIOS_MEDIA):
+            logger.warning("Instagram: audio con URL fuera de los CDNs de Meta — no se descarga")
+            return None
+        try:
+            async with httpx.AsyncClient(follow_redirects=True,
+                                         event_hooks={"request": [_solo_cdn_de_meta]}) as client:
+                r = await client.get(audio_ref)
+        except HostNoPermitido:
+            logger.warning("Instagram: el audio redirige fuera de los CDNs de Meta — no se descarga")
+            return None
+        return r.content if r.status_code == 200 else None

@@ -96,6 +96,8 @@ async def chat(request: Request, response: Response):
 
     try:
         cuerpo = await request.json()
+    except HTTPException:
+        raise  # 413 del límite de tamaño (main.LimiteCuerpo): no se disfraza de «JSON inválido»
     except Exception:
         raise HTTPException(status_code=400, detail="JSON inválido")
 

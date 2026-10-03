@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import os
+import re
 import secrets
 import time
 from collections import deque
@@ -14,12 +15,18 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import PlainTextResponse, Response
 
 from agentkit import borrador, brain, estado, humanizar, memory, reporte, tope, voz, web
+from agentkit.privacidad import ocultar
 from agentkit.providers import MensajeEntrante, obtener_proveedor
 
 load_dotenv(find_dotenv(usecwd=True))  # el .env vive en la carpeta del agente (cwd), no junto al paquete
 
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
-logging.basicConfig(level=logging.DEBUG if ENVIRONMENT == "development" else logging.INFO)
+# INFO por defecto aun en development: en DEBUG las librerías vuelcan teléfonos y conversaciones
+# (Ley 1581; informe de seguridad 2026-10-03, hallazgo 5). DEBUG solo con LOG_LEVEL=DEBUG.
+_nivel = logging.getLevelName(os.getenv("LOG_LEVEL", "INFO").strip().upper())
+logging.basicConfig(level=_nivel if isinstance(_nivel, int) else logging.INFO)
+for _ruidoso in ("anthropic", "openai", "aiosqlite", "httpcore", "sqlalchemy.engine"):
+    logging.getLogger(_ruidoso).setLevel(logging.WARNING)
 logger = logging.getLogger("agentkit")
 logger.addHandler(estado.contador_errores)  # cuenta ERRORes para GET /estado
 
@@ -59,14 +66,62 @@ async def lifespan(app: FastAPI):
 
 from agentkit import __version__
 
-app = FastAPI(title="AgentKit — WhatsApp AI Agent", version=__version__, lifespan=lifespan)
+# Sin /docs, /redoc ni /openapi.json públicos: no le dicen a nadie qué software corre (hallazgo 10).
+app = FastAPI(title="AgentKit — WhatsApp AI Agent", version=__version__, lifespan=lifespan,
+              docs_url=None, redoc_url=None, openapi_url=None)
+
+# Tope de tamaño del cuerpo: un POST de cientos de MB no llena la memoria (hallazgo 8). Los webhooks
+# de Meta/Twilio y el chat web pesan pocos KB; Caddy debería limitar también (request_body max_size).
+def _max_cuerpo() -> int:
+    valor = os.getenv("MAX_CUERPO_BYTES", "").strip()
+    if re.fullmatch(r"[0-9]+", valor) and int(valor) > 0:
+        return int(valor)
+    if valor:
+        logging.getLogger("agentkit").warning(f"MAX_CUERPO_BYTES={valor!r} no es válido: se usa 1 MB")
+    return 1024 * 1024
+
+
+MAX_CUERPO_BYTES = _max_cuerpo()
+
+
+class LimiteCuerpo:
+    """Middleware ASGI: 413 si el Content-Length declarado pasa el tope y, para cuerpos sin él
+    (chunked), corta en cuanto lo recibido pasa el tope — antes de juntarlo entero en memoria."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        limite = MAX_CUERPO_BYTES
+        largo = dict(scope.get("headers") or []).get(b"content-length")
+        if largo is not None:
+            texto = largo.decode("latin-1").strip()
+            if not re.fullmatch(r"[0-9]+", texto) or int(texto) > limite:
+                return await PlainTextResponse("Cuerpo demasiado grande", status_code=413)(scope, receive, send)
+        recibido = 0
+
+        async def receive_limitado():
+            nonlocal recibido
+            mensaje = await receive()
+            if mensaje["type"] == "http.request":
+                recibido += len(mensaje.get("body", b""))
+                if recibido > limite:
+                    raise HTTPException(status_code=413, detail="Cuerpo demasiado grande")
+            return mensaje
+
+        await self.app(scope, receive_limitado, send)
+
+
+app.add_middleware(LimiteCuerpo)
 app.include_router(web.router)  # /chat y /widget.js — canal de chat web (apagado sin WEB_CHAT_ORIGINS)
 
 
 @app.get("/")
 async def health_check():
-    from agentkit import __version__
-    return {"status": "ok", "service": "agentkit", "version": __version__}
+    # Sin versión: /estado (con token) la trae para el panel.
+    return {"status": "ok", "service": "agentkit"}
 
 
 @app.get("/webhook")
@@ -91,7 +146,7 @@ async def procesar_mensaje(msg: MensajeEntrante):
                     msg.telefono, "Recibí tu nota de voz pero no pude escucharla. ¿Me lo escribes? 🙏")
                 return
 
-        logger.info(f"Mensaje de {msg.telefono}: {texto}")
+        logger.info(f"Mensaje de {ocultar(msg.telefono)} ({len(texto)} caracteres)")
 
         # MODO_BORRADOR: los mensajes del admin son comandos (ok/no/editar), no chat
         if borrador.activo() and borrador.es_admin(msg.telefono):
@@ -101,7 +156,7 @@ async def procesar_mensaje(msg: MensajeEntrante):
         if await memory.conversacion_pausada(msg.telefono):
             # Derivado a humano: se guarda el mensaje pero el bot no responde
             await memory.guardar_mensaje(msg.telefono, "user", texto)
-            logger.info(f"Conversación {msg.telefono} pausada — sin respuesta del bot")
+            logger.info(f"Conversación {ocultar(msg.telefono)} pausada — sin respuesta del bot")
             return
 
         # Tope de gasto (docs/TOPE-GASTO.md): pasado el diario, un humano atiende sin llamar a
@@ -152,9 +207,9 @@ async def procesar_mensaje(msg: MensajeEntrante):
 
         if not respondido_en_voz or "http" in respuesta:
             await humanizar.enviar_humanizado(proveedor, msg.telefono, respuesta)
-        logger.info(f"Respuesta a {msg.telefono}: {respuesta}")
+        logger.info(f"Respuesta a {ocultar(msg.telefono)} ({len(respuesta)} caracteres)")
     except Exception as e:
-        logger.exception(f"Error procesando mensaje de {msg.telefono}: {e}")
+        logger.exception(f"Error procesando mensaje de {ocultar(msg.telefono)}: {e}")
 
 
 @app.post("/webhook")
@@ -182,10 +237,13 @@ async def servir_audio(aid: str):
 
 
 @app.get("/reporte")
-async def reporte_diario(token: str = ""):
-    """Genera y envía el reporte del día al equipo. Protegido con REPORTE_TOKEN (cron de Railway)."""
+async def reporte_diario(request: Request, token: str = ""):
+    """Genera y envía el reporte del día al equipo. Protegido con REPORTE_TOKEN (cron de Railway).
+    Mejor por cabecera X-Reporte-Token (la URL con ?token= queda en los access logs); el ?token= se
+    sigue aceptando para no romper los cron ya configurados. Comparación en tiempo constante."""
     esperado = os.getenv("REPORTE_TOKEN", "")
-    if not esperado or token != esperado:
+    recibido = request.headers.get("X-Reporte-Token") or token
+    if not esperado or not secrets.compare_digest(recibido.encode(), esperado.encode()):
         raise HTTPException(status_code=403, detail="Token inválido")
     texto = await reporte.enviar_reporte(proveedor)
     return PlainTextResponse(texto)

@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation
 
 from agentkit import memory, notificar
+from agentkit.privacidad import ocultar
 from agentkit.providers.base import ProveedorWhatsApp
 
 logger = logging.getLogger("agentkit")
@@ -129,7 +130,8 @@ def minutos_hasta_medianoche(ahora: datetime) -> int:
     return max(1, int((manana - ahora).total_seconds() // 60) + 1)
 
 
-def _pausa_minutos() -> int:
+def pausa_minutos() -> int:
+    """PAUSA_MINUTOS del .env (mínimo 1); si no es un número, 60. Lo usan el tope y derivar_a_humano."""
     try:
         return max(1, int(os.getenv("PAUSA_MINUTOS", "60")))
     except ValueError:
@@ -157,7 +159,7 @@ async def _derivar(proveedor: ProveedorWhatsApp, telefono: str, ahora: datetime 
     if await memory.conversacion_pausada(telefono):
         return
     ahora = ahora or datetime.now(memory.BOGOTA)
-    await memory.pausar_conversacion(telefono, max(_pausa_minutos(), minutos_hasta_medianoche(ahora)))
+    await memory.pausar_conversacion(telefono, max(pausa_minutos(), minutos_hasta_medianoche(ahora)))
     avisado = await _avisar(
         proveedor, f"🙋 Cliente {telefono} derivado a humano: el agente llegó a su tope de gasto del día. "
                    f"Atiéndelo por este mismo chat; el bot vuelve mañana.")
@@ -166,7 +168,7 @@ async def _derivar(proveedor: ProveedorWhatsApp, telefono: str, ahora: datetime 
         texto = os.getenv("TOPE_MSG_DERIVAR", "").strip() or MSG_DERIVAR.format(humano=humano)
     else:
         logger.error(f"Tope diario: no hay canal de avisos (ADMIN_PHONE/Telegram) o falló; "
-                     f"{telefono} recibe el mensaje de «escríbenos mañana»")
+                     f"{ocultar(telefono)} recibe el mensaje de «escríbenos mañana»")
         texto = os.getenv("TOPE_MSG_SIN_EQUIPO", "").strip() or MSG_SIN_EQUIPO
     await memory.guardar_mensaje(telefono, "assistant", texto)
     await proveedor.enviar_mensaje(telefono, texto)

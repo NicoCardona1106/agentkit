@@ -41,7 +41,7 @@ Lo que el core ya trae (no lo re-implementes):
 | Respuestas en **burbujas cortas con pausas** (humanización) | `agentkit/humanizar.py` |
 | **Notas de voz** → texto (OpenAI `gpt-4o-mini-transcribe`) y **respuesta en voz** humana (OpenAI `gpt-audio-1.5`, voz femenina `marin`, muestra «O3» elegida por prueba de oído; guarda de fidelidad y respaldo automático `gpt-4o-mini-tts` → Gemini `Kore`; voz e instrucciones configurables en .env) | `agentkit/voz.py` |
 | **Costo en USD por agente**: cada llamada a Claude/STT/TTS queda en la tabla `uso_api`; `/estado` devuelve `costo_usd` (hoy, mes, desglose) | `agentkit/precios.py` + `agentkit/memory.py` |
-| **Reporte diario** al equipo por WhatsApp (`GET /reporte?token=...`) | `agentkit/reporte.py` |
+| **Reporte diario** al equipo por WhatsApp (`GET /reporte` con cabecera `X-Reporte-Token`; `?token=` sigue sirviendo) | `agentkit/reporte.py` |
 | **Estado del agente en JSON** para un panel externo (`GET /estado?token=...`) | `agentkit/main.py` + `agentkit/estado.py` |
 | **Modo borrador**: el admin aprueba/edita cada respuesta por WhatsApp antes de que salga (`ok N` / `no N` / `editar N texto`) | `agentkit/borrador.py` |
 | **Defensa contra inyección de instrucciones**: bloque de seguridad fijo al final de todo prompt, mensajes del cliente envueltos con id aleatorio por turno, herramienta `reportar_manipulacion` (aviso al equipo, 1/hora). NO se quita por agente. Antes de publicar un core o cambiar un prompt: `tests/ataques_prompt.py` desde la carpeta del agente. Lecciones y capas pendientes en `docs/SEGURIDAD.md` | `agentkit/brain.py` + `agentkit/herramientas.py` |
@@ -387,7 +387,9 @@ DATABASE_URL=sqlite+aiosqlite:///./agentkit.db
 # ADMIN_PHONE=+57...            # avisos al equipo (leads, tickets, derivaciones, reporte)
 # TELEGRAM_TOKEN=...            # avisos al equipo por Telegram (bot); con TELEGRAM_CHAT_ID.
 # TELEGRAM_CHAT_ID=-100...      # Útil en agentes solo web (sin WhatsApp). Sin ningún canal, el aviso no se loguea.
-# REPORTE_TOKEN=un-token-secreto  # habilita GET /reporte y GET /estado (con costo_usd)
+# REPORTE_TOKEN=un-token-secreto  # habilita GET /reporte y GET /estado (con costo_usd); largo y aleatorio
+# LOG_LEVEL=INFO                # DEBUG solo para depurar en local: vuelca datos de clientes (Ley 1581)
+# MAX_CUERPO_BYTES=1048576      # tamaño máximo de un webhook/mensaje web (413 si se pasa)
 # OPENAI_API_KEY=sk-...         # notas de voz (gpt-4o-mini-transcribe) + voz de salida (gpt-audio-1.5)
 # TTS_VOZ=marin                 # voz femenina elegida en la prueba de oído (muestra O3)
 # TTS_INSTRUCCIONES="Habla en español de Colombia, con tono cálido y cercano, como una persona amable que atiende por WhatsApp. Habla de corrido y con soltura: une las frases sin pausas largas, no te detengas en las comas ni entre oraciones, y mantén un ritmo conversacional ágil y continuo. Nada de locutor ni de robot."
@@ -526,7 +528,8 @@ navegador contigo guiándolo click por click, confirmando cada uno.
      Token el del .env, suscribirse al campo "messages"; la página de Facebook
      debe estar suscrita a la app
 6. (Opcional) Reporte diario: crear un cron (Railway cron o cron-job.org) que
-   llame `https://tu-app.up.railway.app/reporte?token=REPORTE_TOKEN` a la hora deseada.
+   llame `https://tu-app.up.railway.app/reporte` con la cabecera `X-Reporte-Token: REPORTE_TOKEN`
+   a la hora deseada (si el cron no permite cabeceras, `?token=` funciona, pero queda en los logs).
 7. Prueba final EN VIVO: pídele al usuario que escriba al número/cuenta del
    agente desde su celular y confirma que responde. Solo entonces declara el
    deploy terminado.
