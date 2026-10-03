@@ -1380,6 +1380,297 @@ def test_notificar_telegram_y_sin_canal():
 
 
 
+
+def test_tope_evaluar_y_config():
+    """Regla pura del tope (docs/TOPE-GASTO.md) y variables mal puestas que no apagan el agente."""
+    from decimal import Decimal as D
+    from agentkit import tope
+
+    t = tope.Topes(dia=D("2"), mes=D("20"))
+    e = tope.evaluar(D("1.59"), D("5"), t)
+    assert (e.sin_voz, e.derivar, e.avisos) == (False, False, [])
+    e = tope.evaluar(D("1.60"), D("5"), t)  # 80 % exacto
+    assert (e.sin_voz, e.derivar, e.avisos) == (True, False, ["dia80"])
+    e = tope.evaluar(D("2"), D("5"), t)  # 100 % exacto
+    assert (e.sin_voz, e.derivar) == (True, True) and "dia80" not in e.avisos
+    e = tope.evaluar(D("0.10"), D("20"), t)  # mes pasado: solo texto, NO deriva
+    assert (e.sin_voz, e.derivar, e.avisos) == (True, False, ["mes"])
+    e = tope.evaluar(D("999"), D("999"), tope.Topes(None, None))
+    assert (e.sin_voz, e.derivar, e.avisos) == (False, False, [])
+
+    for var in ("TOPE_USD_DIA", "TOPE_USD_MES"):
+        os.environ.pop(var, None)
+    assert tope.topes() == tope.Topes(None, None)
+    try:
+        for malo in ("0", "-1", "abc", "NaN", "inf", "  "):
+            os.environ["TOPE_USD_DIA"] = malo
+            assert tope.topes().dia is None, malo
+        os.environ.update({"TOPE_USD_DIA": " 2.5 ", "TOPE_USD_MES": "30"})
+        assert tope.topes() == tope.Topes(D("2.5"), D("30"))
+    finally:
+        for var in ("TOPE_USD_DIA", "TOPE_USD_MES"):
+            os.environ.pop(var, None)
+
+    from datetime import datetime
+    assert tope.minutos_hasta_medianoche(datetime(2026, 10, 3, 23, 30, tzinfo=memory_bogota())) == 31
+    assert tope.minutos_hasta_medianoche(datetime(2026, 10, 3, 0, 0, tzinfo=memory_bogota())) == 1441
+
+
+def memory_bogota():
+    from agentkit import memory
+    return memory.BOGOTA
+
+
+async def _test_tope_costos_mensajeria():
+    """Suma de hoy y del mes sin el canal web; la voz (sin teléfono) sí cuenta."""
+    from datetime import datetime, timedelta, timezone
+    from decimal import Decimal as D
+    from agentkit import memory
+
+    await memory.inicializar_db()
+    dia0, mes0 = await memory.costos_mensajeria()
+    await memory.registrar_uso(tipo="llm", proveedor="anthropic", modelo="m", usd="1.5", telefono="573001112233")
+    await memory.registrar_uso(tipo="tts", proveedor="openai", modelo="m", usd="0.25", telefono=None)
+    await memory.registrar_uso(tipo="llm", proveedor="anthropic", modelo="m", usd="9", telefono="web:abc")
+    # Del mes pasado: no cuenta ni en el día ni en el mes.
+    viejo = datetime.now(memory.BOGOTA).replace(day=1, hour=0, minute=0, second=0, microsecond=0) - timedelta(days=1)
+    await memory.registrar_uso(tipo="llm", proveedor="anthropic", modelo="m", usd="50", telefono="573001112233",
+                               creado_en=viejo.astimezone(timezone.utc).replace(tzinfo=None))
+    # De ayer, en el mismo mes (salvo el día 1): cuenta en el mes, no en el día.
+    hoy = datetime.now(memory.BOGOTA).replace(hour=0, minute=0, second=0, microsecond=0)
+    extra_mes = D("0")
+    if hoy.day > 1:
+        await memory.registrar_uso(tipo="llm", proveedor="anthropic", modelo="m", usd="3", telefono="573001112233",
+                                   creado_en=(hoy - timedelta(minutes=1)).astimezone(timezone.utc).replace(tzinfo=None))
+        extra_mes = D("3")
+    # Borde del mes en Bogotá (05:00 UTC del día 1): 04:59 UTC es del mes pasado; 05:00 UTC, de este.
+    inicio_mes = hoy.replace(day=1).astimezone(timezone.utc).replace(tzinfo=None)
+    await memory.registrar_uso(tipo="llm", proveedor="anthropic", modelo="m", usd="40", telefono="573001112233",
+                               creado_en=inicio_mes - timedelta(minutes=1))
+    await memory.registrar_uso(tipo="llm", proveedor="anthropic", modelo="m", usd="0.5", telefono="573001112233",
+                               creado_en=inicio_mes)
+    extra_mes += D("0.5")
+    extra_dia = D("0.5") if hoy.day == 1 else D("0")
+    dia1, mes1 = await memory.costos_mensajeria()
+    assert dia1 - dia0 == D("1.75") + extra_dia, (dia0, dia1)
+    solo_dia, sin_mes = await memory.costos_mensajeria(solo_hoy=True)
+    assert solo_dia == dia1 and sin_mes == D("0")
+    assert mes1 - mes0 == D("1.75") + extra_mes, (mes0, mes1)
+
+
+async def _test_tope_en_procesar_mensaje():
+    """Con el tope diario pasado no se llama a Claude: el cliente queda con un humano hasta mañana y
+    el equipo se entera. Al 80 % (o pasado el mensual) responde solo en texto y avisa una sola vez."""
+    import secrets as secrets_mod
+    from decimal import Decimal as D
+    from agentkit import brain, memory, tope, voz
+    from agentkit.providers import MensajeEntrante
+    import agentkit.main as main_mod
+
+    await memory.inicializar_db()
+    llamadas, enviados, audios, consultas = [], [], [], []
+    # Admin distinto en cada corrida: la base de pruebas se reutiliza entre corridas y una pausa
+    # vieja del admin no puede decidir el resultado.
+    admin = f"+57{secrets_mod.randbelow(10**9):09d}"
+    gasto = {"dia": D(0), "mes": D(0)}
+
+    async def generar(telefono, mensaje, historial, proveedor, en_voz=False):
+        llamadas.append(en_voz)
+        return "Respuesta de Claude"
+
+    async def transcribir(audio, nombre_archivo="audio.ogg"):
+        return "hola en voz"
+
+    async def sintetizar(texto):
+        return b"OggS-audio"
+
+    async def costos(solo_hoy=False):
+        consultas.append(solo_hoy)
+        return gasto["dia"], (D(0) if solo_hoy else gasto["mes"])
+
+    class FakeProv:
+        async def descargar_audio(self, ref):
+            return b"OggS"
+
+        async def enviar_mensaje(self, tel, texto):
+            enviados.append((tel, texto))
+            return True
+
+        async def enviar_audio_url(self, tel, url):
+            audios.append(url)
+            return True
+
+    reales = (brain.generar_respuesta, voz.transcribir, voz.sintetizar, main_mod.proveedor, memory.costos_mensajeria)
+    brain.generar_respuesta, voz.transcribir, voz.sintetizar = generar, transcribir, sintetizar
+    main_mod.proveedor, memory.costos_mensajeria = FakeProv(), costos
+    for var in ("MODO_BORRADOR", "TTS_PROVEEDOR", "GEMINI_API_KEY", "TELEGRAM_TOKEN", "TOPE_MSG_DERIVAR"):
+        os.environ.pop(var, None)
+    os.environ.update({"OPENAI_API_KEY": "sk-test", "PUBLIC_URL": "https://agente.test", "HUMANIZAR": "false",
+                       "ADMIN_PHONE": admin, "TOPE_USD_DIA": "2", "TOPE_USD_MES": "20",
+                       "NOMBRE_HUMANO": "Carlos"})
+    tope._avisados.clear()
+    voz_msg = lambda tel, i: MensajeEntrante(telefono=tel, texto="", mensaje_id=f"v{i}", audio_ref="a")
+    try:
+        # Sin llegar al 80 %: responde en voz (control).
+        tel = f"tope-{secrets_mod.token_hex(4)}"
+        gasto.update(dia=D("1.59"), mes=D("5"))
+        await main_mod.procesar_mensaje(voz_msg(tel, 1))
+        assert llamadas == [True] and len(audios) == 1 and enviados == []
+
+        # 80 % del día: solo texto y UN aviso al equipo aunque lleguen dos mensajes.
+        llamadas.clear(); audios.clear()
+        gasto.update(dia=D("1.60"))
+        await main_mod.procesar_mensaje(voz_msg(tel, 2))
+        await main_mod.procesar_mensaje(voz_msg(tel, 3))
+        assert llamadas == [False, False] and audios == []
+        avisos = [t for d, t in enviados if d == admin]
+        assert len(avisos) == 1 and "80 %" in avisos[0] and "USD 1.60" in avisos[0] and "USD 2.00" in avisos[0]
+        assert [t for d, t in enviados if d == tel] == ["Respuesta de Claude"] * 2
+
+        # 80 % del día con el mes también pasado: el aviso no promete «mañana vuelve a la normalidad».
+        tope._avisados.clear(); enviados.clear()
+        gasto.update(dia=D("1.60"), mes=D("20"))
+        await main_mod.procesar_mensaje(voz_msg(tel, 30))
+        aviso80 = [t for d, t in enviados if d == admin and "80 %" in t]
+        assert len(aviso80) == 1 and "Mañana" not in aviso80[0]
+        tope._avisados.clear()
+
+        # Mes pasado (día bajo): solo texto, aviso del mes una vez, NO deriva.
+        llamadas.clear(); enviados.clear()
+        gasto.update(dia=D("0.10"), mes=D("20"))
+        await main_mod.procesar_mensaje(voz_msg(tel, 4))
+        await main_mod.procesar_mensaje(voz_msg(tel, 5))
+        assert llamadas == [False, False] and audios == []
+        avisos = [t for d, t in enviados if d == admin]
+        assert len(avisos) == 1 and "tope mensual" in avisos[0]
+
+        # 100 % del día: sin Claude, mensaje fijo al cliente, pausa hasta mañana y aviso con el número.
+        llamadas.clear(); enviados.clear()
+        gasto.update(dia=D("2"), mes=D("5"))
+        tel2 = f"tope-{secrets_mod.token_hex(4)}"
+        await main_mod.procesar_mensaje(MensajeEntrante(telefono=tel2, texto="quiero comprar", mensaje_id="d1"))
+        assert llamadas == []
+        al_cliente = [t for d, t in enviados if d == tel2]
+        assert al_cliente == ["Gracias por escribirnos 🙏 En un momento Carlos te responde por este mismo chat."]
+        avisos = [t for d, t in enviados if d == admin]
+        assert len(avisos) == 2 and "tope diario" in avisos[0] and "hasta medianoche" in avisos[0]
+        assert tel2 in avisos[1] and "tope de gasto" in avisos[1]
+        assert await memory.conversacion_pausada(tel2)
+        # La pausa dura hasta la medianoche de Bogotá (no PAUSA_MINUTOS=60 ni la medianoche del servidor).
+        async with memory.async_session() as session:
+            hasta = (await session.get(memory.Pausa, tel2)).hasta
+        from datetime import datetime as dt, timedelta as td, timezone as tz
+        ahora_bog = dt.now(memory.BOGOTA)
+        medianoche = (ahora_bog + td(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+        esperado = medianoche.astimezone(tz.utc).replace(tzinfo=None)
+        assert abs((hasta - esperado).total_seconds()) <= 120, (hasta, esperado)
+        historial = await memory.obtener_historial(tel2)
+        assert [m["role"] for m in historial[-2:]] == ["user", "assistant"]
+        # El siguiente mensaje del mismo cliente ya está pausado: ni Claude ni otro aviso.
+        enviados.clear()
+        await main_mod.procesar_mensaje(MensajeEntrante(telefono=tel2, texto="¿hola?", mensaje_id="d2"))
+        assert llamadas == [] and enviados == []
+
+        # Mensaje propio por .env.
+        os.environ["TOPE_MSG_DERIVAR"] = "Ya te atiende una persona."
+        tel3 = f"tope-{secrets_mod.token_hex(4)}"
+        await main_mod.procesar_mensaje(MensajeEntrante(telefono=tel3, texto="hola", mensaje_id="d3"))
+        assert [t for d, t in enviados if d == tel3] == ["Ya te atiende una persona."]
+
+        # El aviso global del 100 % sale una sola vez; el de cada cliente, siempre.
+        enviados.clear()
+        tel4 = f"tope-{secrets_mod.token_hex(4)}"
+        await main_mod.procesar_mensaje(MensajeEntrante(telefono=tel4, texto="hola", mensaje_id="d4"))
+        avisos = [t for d, t in enviados if d == admin]
+        assert len(avisos) == 1 and tel4 in avisos[0]
+
+        # PAUSA_MINUTOS mal puesto no deja mudo al agente.
+        os.environ["PAUSA_MINUTOS"] = "abc"
+        enviados.clear()
+        tel5 = f"tope-{secrets_mod.token_hex(4)}"
+        await main_mod.procesar_mensaje(MensajeEntrante(telefono=tel5, texto="hola", mensaje_id="d5"))
+        assert [t for d, t in enviados if d == tel5] == ["Ya te atiende una persona."]
+        assert await memory.conversacion_pausada(tel5)
+        os.environ.pop("PAUSA_MINUTOS")
+
+        # Tres mensajes simultáneos del mismo cliente: una sola derivación y un solo aviso.
+        enviados.clear()
+        tel6 = f"tope-{secrets_mod.token_hex(4)}"
+        await asyncio.gather(*(main_mod.procesar_mensaje(MensajeEntrante(telefono=tel6, texto=f"m{i}", mensaje_id=f"c{i}"))
+                               for i in range(3)))
+        assert [t for d, t in enviados if d == tel6] == ["Ya te atiende una persona."]
+        assert len([t for d, t in enviados if d == admin and tel6 in t]) == 1
+        assert tel6 not in tope._candados  # el candado por teléfono se libera al terminar
+
+        # El ADMIN_PHONE no queda derivado (es el equipo).
+        enviados.clear(); llamadas.clear()
+        await main_mod.procesar_mensaje(MensajeEntrante(telefono=admin, texto="¿cómo vamos?", mensaje_id="a1"))
+        assert llamadas == [False] and not await memory.conversacion_pausada(admin)
+
+        # MODO_BORRADOR con el tope pasado: el admin sigue aprobando (no se deriva ni se pausa).
+        from agentkit import borrador
+        comandos = []
+        real_comando = borrador.comando_admin
+        async def comando(prov, texto):
+            comandos.append(texto)
+        borrador.comando_admin = comando
+        os.environ["MODO_BORRADOR"] = "true"
+        enviados.clear()
+        try:
+            await main_mod.procesar_mensaje(MensajeEntrante(telefono=admin, texto="ok 1", mensaje_id="b1"))
+        finally:
+            borrador.comando_admin = real_comando
+            os.environ.pop("MODO_BORRADOR")
+        assert comandos == ["ok 1"] and enviados == []
+        assert not await memory.conversacion_pausada(admin)
+
+        # Sin canal de avisos: no se le promete un asesor que nunca se entera; igual se pausa.
+        os.environ.pop("ADMIN_PHONE")
+        enviados.clear()
+        tel7 = f"tope-{secrets_mod.token_hex(4)}"
+        await main_mod.procesar_mensaje(MensajeEntrante(telefono=tel7, texto="hola", mensaje_id="d7"))
+        assert [t for d, t in enviados if d == tel7] == [tope.MSG_SIN_EQUIPO]
+        assert await memory.conversacion_pausada(tel7)
+        os.environ["ADMIN_PHONE"] = admin
+
+        # Si el aviso al equipo lanza un error, el cliente igual recibe su respuesta (80 %).
+        from agentkit import notificar
+        real_notificar = notificar.notificar_equipo
+        async def notificar_roto(prov, texto):
+            raise RuntimeError("canal caído")
+        notificar.notificar_equipo = notificar_roto
+        tope._avisados.clear()
+        gasto.update(dia=D("1.7"), mes=D("1"))
+        enviados.clear(); llamadas.clear()
+        tel8 = f"tope-{secrets_mod.token_hex(4)}"
+        try:
+            await main_mod.procesar_mensaje(MensajeEntrante(telefono=tel8, texto="hola", mensaje_id="n1"))
+        finally:
+            notificar.notificar_equipo = real_notificar
+        assert llamadas == [False] and [t for d, t in enviados if d == tel8] == ["Respuesta de Claude"]
+
+        # Sin tope mensual no se trae el mes entero (consulta solo de hoy).
+        os.environ.pop("TOPE_USD_MES")
+        consultas.clear()
+        await main_mod.procesar_mensaje(MensajeEntrante(telefono=tel8, texto="otra", mensaje_id="n2"))
+        assert consultas == [True]
+        os.environ["TOPE_USD_MES"] = "20"
+
+        # Si leer el gasto falla, el agente sigue respondiendo (nunca se apaga por el tope).
+        async def roto():
+            raise RuntimeError("bd caída")
+        memory.costos_mensajeria = roto
+        llamadas.clear()
+        await main_mod.procesar_mensaje(MensajeEntrante(telefono=f"tope-{secrets_mod.token_hex(4)}", texto="hola", mensaje_id="r1"))
+        assert llamadas == [False]
+    finally:
+        brain.generar_respuesta, voz.transcribir, voz.sintetizar, main_mod.proveedor, memory.costos_mensajeria = reales
+        for var in ("OPENAI_API_KEY", "PUBLIC_URL", "HUMANIZAR", "ADMIN_PHONE", "TOPE_USD_DIA", "TOPE_USD_MES",
+                    "NOMBRE_HUMANO", "TOPE_MSG_DERIVAR", "PAUSA_MINUTOS", "MODO_BORRADOR"):
+            os.environ.pop(var, None)
+        tope._avisados.clear()
+
+
 if __name__ == "__main__":
     test_humanizar()
     test_notificar_telegram_y_sin_canal()
@@ -1420,4 +1711,7 @@ if __name__ == "__main__":
     test_registrar_lead_web_contacto()
     test_migracion_columnas_nuevas()
     test_defensa_inyeccion()
+    test_tope_evaluar_y_config()
+    asyncio.run(_test_tope_costos_mensajeria())
+    asyncio.run(_test_tope_en_procesar_mensaje())
     print("OK — todos los self-checks pasaron")

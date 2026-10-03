@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 from dotenv import find_dotenv, load_dotenv
-from sqlalchemy import DateTime, Float, Integer, String, Text, delete, func, inspect, select, text
+from sqlalchemy import DateTime, Float, Integer, String, Text, delete, func, inspect, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -340,3 +340,21 @@ async def costo_web_hoy() -> Decimal:
         filas = (await session.execute(select(UsoApi.usd).where(
             UsoApi.creado_en >= desde, UsoApi.telefono.like("web:%")))).scalars().all()
     return sum((Decimal(u) for u in filas), Decimal(0))
+
+
+async def costos_mensajeria(solo_hoy: bool = False) -> tuple[Decimal, Decimal]:
+    """Costo en USD de hoy y del mes (días de Bogotá) de todo menos el chat web: WhatsApp,
+    Instagram y la voz (STT/TTS se registran sin teléfono). Para el tope de gasto del agente
+    (agentkit/tope.py); el canal web tiene su propio tope (costo_web_hoy). `solo_hoy`: no trae el mes
+    (el segundo valor queda en 0) cuando no hay tope mensual."""
+    hoy = datetime.now(BOGOTA).replace(hour=0, minute=0, second=0, microsecond=0)
+    desde_hoy = hoy.astimezone(timezone.utc).replace(tzinfo=None)
+    desde_mes = hoy.replace(day=1).astimezone(timezone.utc).replace(tzinfo=None)
+    async with async_session() as session:
+        filas = (await session.execute(select(UsoApi.usd, UsoApi.creado_en).where(
+            UsoApi.creado_en >= (desde_hoy if solo_hoy else desde_mes),
+            # NOT LIKE con NULL da NULL (fila fuera): la voz sin teléfono se incluye a mano
+            or_(UsoApi.telefono.is_(None), UsoApi.telefono.not_like("web:%"))))).all()
+    mes = Decimal(0) if solo_hoy else sum((Decimal(u) for u, _ in filas), Decimal(0))
+    dia = sum((Decimal(u) for u, creado in filas if creado >= desde_hoy), Decimal(0))
+    return dia, mes

@@ -45,6 +45,7 @@ Lo que el core ya trae (no lo re-implementes):
 | **Estado del agente en JSON** para un panel externo (`GET /estado?token=...`) | `agentkit/main.py` + `agentkit/estado.py` |
 | **Modo borrador**: el admin aprueba/edita cada respuesta por WhatsApp antes de que salga (`ok N` / `no N` / `editar N texto`) | `agentkit/borrador.py` |
 | **Defensa contra inyección de instrucciones**: bloque de seguridad fijo al final de todo prompt, mensajes del cliente envueltos con id aleatorio por turno, herramienta `reportar_manipulacion` (aviso al equipo, 1/hora). NO se quita por agente. Antes de publicar un core o cambiar un prompt: `tests/ataques_prompt.py` desde la carpeta del agente. Lecciones y capas pendientes en `docs/SEGURIDAD.md` | `agentkit/brain.py` + `agentkit/herramientas.py` |
+| **Tope de gasto por agente** (`TOPE_USD_DIA` / `TOPE_USD_MES`): al 80 % del diario o pasado el mensual responde solo en texto; al 100 % del diario deriva cada conversación a un humano hasta la medianoche sin llamar a Claude, con aviso al equipo. Sin las variables no hay tope. Detalle en `docs/TOPE-GASTO.md` | `agentkit/tope.py` |
 | Chat de prueba local sin WhatsApp | `python -m agentkit.chat` |
 
 Estructura de un agente (la capa fina que TÚ generas). Cada agente vive en
@@ -398,6 +399,12 @@ DATABASE_URL=sqlite+aiosqlite:///./agentkit.db
 # PAUSA_MINUTOS=60              # cuánto se pausa el bot al derivar a humano
 # NOMBRE_HUMANO=un asesor       # cómo llama el bot a quien atiende al derivar ("el barbero")
 # MODO_BORRADOR=true            # el admin aprueba cada respuesta (ok N / no N / editar N texto)
+
+# Tope de gasto del agente (WhatsApp/Instagram; el chat web tiene su propio tope). Ver docs/TOPE-GASTO.md
+# TOPE_USD_DIA=2                # 80 %: solo texto + aviso; 100 %: deriva a humano hasta mañana (2 con Haiku, 3 con Sonnet)
+# TOPE_USD_MES=20               # al pasarlo: solo texto hasta fin de mes (rango 20-50 según el plan)
+# TOPE_MSG_DERIVAR="..."        # lo que recibe el cliente al pasar el tope diario (exige ADMIN_PHONE o Telegram)
+# TOPE_MSG_SIN_EQUIPO="..."     # si no hay canal de avisos: «escríbenos mañana» en vez de prometer un asesor
 
 # Chat web (opcional): embebe un chat en tu landing con el mismo agente de WhatsApp
 # WEB_CHAT_ORIGINS=https://tu-landing.com  # orígenes permitidos, separados por coma; sin

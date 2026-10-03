@@ -13,7 +13,7 @@ from dotenv import find_dotenv, load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import PlainTextResponse, Response
 
-from agentkit import borrador, brain, estado, humanizar, memory, reporte, voz, web
+from agentkit import borrador, brain, estado, humanizar, memory, reporte, tope, voz, web
 from agentkit.providers import MensajeEntrante, obtener_proveedor
 
 load_dotenv(find_dotenv(usecwd=True))  # el .env vive en la carpeta del agente (cwd), no junto al paquete
@@ -104,11 +104,21 @@ async def procesar_mensaje(msg: MensajeEntrante):
             logger.info(f"Conversación {msg.telefono} pausada — sin respuesta del bot")
             return
 
+        # Tope de gasto (docs/TOPE-GASTO.md): pasado el diario, un humano atiende sin llamar a
+        # Claude; cerca del diario o pasado el mensual, solo texto.
+        limite = await tope.revisar(proveedor)
+        # El ADMIN_PHONE nunca queda derivado: es el equipo, no un cliente.
+        if limite.derivar and not borrador.es_admin(msg.telefono):
+            await memory.guardar_mensaje(msg.telefono, "user", texto)
+            await tope.derivar(proveedor, msg.telefono)
+            return
+
         # Si el cliente habló, el agente responde con voz (requiere TTS y PUBLIC_URL); el cerebro
         # lo sabe para escribir frases de corrido que suenen naturales.
         public_url = os.getenv("PUBLIC_URL", "").rstrip("/")
         # En MODO_BORRADOR la respuesta va al admin como texto: sin voz ni instrucción de voz
-        en_voz = bool(msg.audio_ref and public_url and voz.tts_configurada() and not borrador.activo())
+        en_voz = bool(msg.audio_ref and public_url and voz.tts_configurada() and not borrador.activo()
+                      and not limite.sin_voz)
 
         historial = await memory.obtener_historial(msg.telefono)
         respuesta = await brain.generar_respuesta(msg.telefono, texto, historial, proveedor, en_voz=en_voz)
