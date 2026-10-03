@@ -35,7 +35,8 @@ _arranque_monotonic: float | None = None
 
 proveedor = obtener_proveedor()
 
-# Dedup de webhooks reenviados (Meta/Twilio reintentan si no respondemos rápido)
+# Dedup de webhooks reenviados (Meta/Twilio/Instagram reintentan si no respondemos rápido): la base
+# manda (sobrevive a reinicios; con varios workers, usar PostgreSQL); esta lista corta es el respaldo si la base falla.
 _procesados: deque[str] = deque(maxlen=500)
 
 # Tope total de la respuesta en voz (proveedor principal + respaldos): si vence, sale el texto
@@ -212,6 +213,22 @@ async def procesar_mensaje(msg: MensajeEntrante):
         logger.exception(f"Error procesando mensaje de {ocultar(msg.telefono)}: {e}")
 
 
+async def _es_nuevo(mensaje_id: str) -> bool:
+    """True si el mensaje no se ha atendido antes. Sin id no hay cómo reconocer un reintento: se
+    atiende (antes, el primer id vacío hacía descartar todos los siguientes). Si la base falla, se
+    decide con la lista en memoria: mejor un posible doble que dejar al cliente sin respuesta."""
+    if not mensaje_id:
+        return True
+    if mensaje_id in _procesados:
+        return False
+    _procesados.append(mensaje_id)
+    try:
+        return await memory.marcar_procesado(mensaje_id)
+    except Exception as e:
+        logger.error(f"No se pudo registrar el mensaje en la base (dedup solo en memoria): {e!r}")
+        return True
+
+
 @app.post("/webhook")
 async def webhook_handler(request: Request):
     """Recibe mensajes de WhatsApp. Valida la firma, responde rápido y procesa en background."""
@@ -219,9 +236,8 @@ async def webhook_handler(request: Request):
         raise HTTPException(status_code=403, detail="Firma inválida")
     mensajes = await proveedor.parsear_webhook(request)
     for msg in mensajes:
-        if not (msg.texto or msg.audio_ref) or msg.mensaje_id in _procesados:
+        if not (msg.texto or msg.audio_ref) or not await _es_nuevo(msg.mensaje_id):
             continue
-        _procesados.append(msg.mensaje_id)
         # Background: el proveedor reintenta el webhook si tardamos; Claude puede tardar >15s
         asyncio.create_task(procesar_mensaje(msg))
     return {"status": "ok"}

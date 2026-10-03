@@ -1,12 +1,16 @@
 # agentkit/memory.py — Persistencia: conversaciones, clientes, leads, tickets y pausas
 # SQLite en local, PostgreSQL en producción (via DATABASE_URL).
 
+import asyncio
+import hashlib
+import logging
 import os
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 from dotenv import find_dotenv, load_dotenv
 from sqlalchemy import DateTime, Float, Integer, String, Text, delete, func, inspect, or_, select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -15,6 +19,8 @@ load_dotenv(find_dotenv(usecwd=True))  # el .env vive en la carpeta del agente (
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./agentkit.db")
 if DATABASE_URL.startswith("postgresql://"):
     DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
+
+logger = logging.getLogger("agentkit")
 
 engine = create_async_engine(DATABASE_URL, echo=False)
 async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
@@ -101,6 +107,16 @@ class UsoApi(Base):
     usd: Mapped[str] = mapped_column(String(40))
 
 
+class MensajeProcesado(Base):
+    """Id de un mensaje entrante ya atendido: Meta, Twilio e Instagram reintentan el webhook si no
+    respondemos a tiempo y sin esto el cliente recibe la respuesta dos veces. En la base (y no en
+    memoria) para que sobreviva a un reinicio o deploy. Con varios workers de uvicorn, usar PostgreSQL:
+    en SQLite un bloqueo de más de 5 s se trata como «base caída» y ese mensaje podría salir doble."""
+    __tablename__ = "mensajes_procesados"
+    mensaje_id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    creado: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)  # UTC
+
+
 async def inicializar_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -118,6 +134,61 @@ async def _migrar_columnas_nuevas(conn):
         await conn.execute(text("ALTER TABLE uso_api ADD COLUMN telefono VARCHAR(50)"))
     if "contacto" not in await conn.run_sync(columnas, "leads"):
         await conn.execute(text("ALTER TABLE leads ADD COLUMN contacto VARCHAR(200) DEFAULT ''"))
+
+
+# ── Mensajes ya procesados (dedup de webhooks) ────────────────
+
+# Los proveedores reintentan por horas, no por semanas: 7 días sobra y la tabla no crece sin fin.
+PROCESADOS_DIAS = 7
+_PROCESADOS_BARRIDO = 500  # cada cuántos mensajes nuevos se borran los viejos
+_procesados_desde_barrido = 0
+
+
+def _clave_mensaje(mensaje_id: str) -> str:
+    """Los ids de Meta (wamid…) rondan los 60 caracteres; uno más largo se guarda como su sha256
+    para que quepa en la columna sin recortarlo (recortar podría juntar dos ids distintos). Un id que
+    ya empiece por «sha256:» también se hashea, para que nunca choque con el hash de otro."""
+    if len(mensaje_id) <= 64 and not mensaje_id.startswith("sha256:"):
+        return mensaje_id
+    return "sha256:" + hashlib.sha256(mensaje_id.encode()).hexdigest()
+
+
+async def marcar_procesado(mensaje_id: str) -> bool:
+    """Registra el id y dice si es NUEVO (True) o un reintento ya visto (False). La llave primaria
+    decide: si dos reintentos llegan a la vez (o a dos workers), solo uno logra insertarlo. Solo el
+    duplicado devuelve False: cualquier otro error de la base sube, y main.py atiende el mensaje."""
+    global _procesados_desde_barrido
+    async with async_session() as session:
+        session.add(MensajeProcesado(mensaje_id=_clave_mensaje(mensaje_id)))
+        try:
+            await session.commit()
+        except IntegrityError:
+            return False
+    _procesados_desde_barrido += 1
+    if _procesados_desde_barrido >= _PROCESADOS_BARRIDO:
+        _procesados_desde_barrido = 0
+        # En segundo plano: el DELETE no debe demorar el 200 al proveedor (la demora causa reintentos)
+        _barridos.add(t := asyncio.create_task(_barrer_procesados()))
+        t.add_done_callback(_barridos.discard)
+    return True
+
+
+_barridos: set[asyncio.Task] = set()  # referencia fuerte para que el GC no se lleve la tarea
+
+
+async def _barrer_procesados():
+    try:
+        await purgar_procesados()
+    except Exception as e:  # el mensaje ya quedó registrado: un barrido fallido no lo afecta
+        logger.warning(f"No se pudo barrer mensajes_procesados (se reintenta en {_PROCESADOS_BARRIDO} mensajes): {e!r}")
+
+
+async def purgar_procesados(dias: int = PROCESADOS_DIAS) -> int:
+    limite = datetime.utcnow() - timedelta(days=dias)
+    async with async_session() as session:
+        r = await session.execute(delete(MensajeProcesado).where(MensajeProcesado.creado < limite))
+        await session.commit()
+        return r.rowcount or 0
 
 
 # ── Conversación ──────────────────────────────────────────────

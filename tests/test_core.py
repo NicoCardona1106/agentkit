@@ -2048,6 +2048,173 @@ def test_cuerpo_chunked_y_redirecciones_de_instagram():
         assert pedidos == ["https://lookaside.fbsbx.com/ig_messaging_cdn/?asset_id=1"]  # el salto ni se pidió
         assert asyncio.run(p.descargar_audio("https://l.facebook.com/l.php?u=x")) is None
 
+
+async def _test_dedup_mensajes_procesados():
+    """v0.8.9: el dedup vive en la base (sobrevive a reinicios y a varios workers), un id largo no se
+    recorta (dos ids con el mismo comienzo son distintos), reintentos simultáneos dejan pasar uno solo
+    y lo viejo se barre solo."""
+    import uuid
+    from datetime import datetime, timedelta
+    from sqlalchemy import select
+    from agentkit import memory
+
+    await memory.inicializar_db()
+    base = f"wamid.{uuid.uuid4().hex}"
+    assert await memory.marcar_procesado(base) is True
+    assert await memory.marcar_procesado(base) is False
+    assert await memory.marcar_procesado(base + "b") is True  # otro id, aunque empiece igual
+
+    largo = "x" * 64 + uuid.uuid4().hex
+    assert await memory.marcar_procesado(largo) is True
+    assert await memory.marcar_procesado(largo) is False
+    assert await memory.marcar_procesado(largo + "z") is True  # recortar a 64 los juntaría
+    assert memory._clave_mensaje("a" * 64) == "a" * 64
+    assert memory._clave_mensaje("a" * 65).startswith("sha256:")
+    largo_col = memory.MensajeProcesado.__table__.c.mensaje_id.type.length
+    assert len(memory._clave_mensaje("a" * 5000)) <= largo_col  # cabe en la columna (SQLite no lo exige)
+    assert memory._clave_mensaje("sha256:abc").startswith("sha256:") and memory._clave_mensaje("sha256:abc") != "sha256:abc"
+
+    simultaneo = f"wamid.{uuid.uuid4().hex}"
+    r = await asyncio.gather(*(memory.marcar_procesado(simultaneo) for _ in range(5)))
+    assert sorted(r) == [False, False, False, False, True]
+
+    viejo, reciente = f"viejo-{uuid.uuid4().hex}", f"reciente-{uuid.uuid4().hex}"
+    async with memory.async_session() as s:
+        s.add(memory.MensajeProcesado(mensaje_id=viejo, creado=datetime.utcnow() - timedelta(days=8)))
+        s.add(memory.MensajeProcesado(mensaje_id=reciente, creado=datetime.utcnow() - timedelta(days=6)))
+        await s.commit()
+    real = memory._PROCESADOS_BARRIDO
+    memory._PROCESADOS_BARRIDO, memory._procesados_desde_barrido = 2, 0
+    try:
+        assert await memory.marcar_procesado(f"n1-{uuid.uuid4().hex}") is True
+        async with memory.async_session() as s:  # todavía no toca barrer
+            assert await s.get(memory.MensajeProcesado, viejo) is not None
+        assert await memory.marcar_procesado(f"n2-{uuid.uuid4().hex}") is True
+        await asyncio.gather(*memory._barridos)  # el barrido corre en segundo plano
+    finally:
+        memory._PROCESADOS_BARRIDO = real
+    async with memory.async_session() as s:
+        assert await s.get(memory.MensajeProcesado, viejo) is None  # más de 7 días: barrido
+        assert await s.get(memory.MensajeProcesado, reciente) is not None  # 6 días: se queda
+    assert await memory.marcar_procesado(viejo) is True  # barrido = olvidado (pasaron días)
+    assert memory._procesados_desde_barrido == 1  # el contador volvió a empezar
+
+    # Un barrido que falla no cambia la respuesta: el mensaje quedó registrado y es nuevo
+    from unittest import mock
+    async def barrido_roto(dias=7):
+        raise RuntimeError("delete falló")
+    memory._PROCESADOS_BARRIDO, memory._procesados_desde_barrido = 1, 0
+    try:
+        with mock.patch.object(memory, "purgar_procesados", barrido_roto):
+            nuevo = f"n3-{uuid.uuid4().hex}"
+            assert await memory.marcar_procesado(nuevo) is True
+            await asyncio.gather(*memory._barridos)  # no revienta: el error queda en el log
+    finally:
+        memory._PROCESADOS_BARRIDO, memory._procesados_desde_barrido = real, 0
+    async with memory.async_session() as s:
+        assert await s.get(memory.MensajeProcesado, nuevo) is not None
+
+    # Un error de la base que NO es duplicado sube (para que main.py atienda el mensaje), nunca False
+    from sqlalchemy.exc import OperationalError
+    class SesionCaida:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        def add(self, _): pass
+        async def commit(self): raise OperationalError("INSERT", {}, Exception("database is locked"))
+    with mock.patch.object(memory, "async_session", lambda: SesionCaida()):
+        try:
+            await memory.marcar_procesado(f"caida-{uuid.uuid4().hex}")
+            assert False, "un error de la base no puede leerse como duplicado"
+        except OperationalError:
+            pass
+
+
+def test_webhook_dedup_en_base():
+    """El webhook atiende una sola vez cada id aunque el proceso se reinicie (lista en memoria vacía);
+    los mensajes sin id se atienden siempre; si la base falla, se atiende y la lista en memoria frena
+    el reintento."""
+    import uuid
+    from unittest import mock
+    from fastapi.testclient import TestClient
+    import agentkit.main as main_mod
+    from agentkit.providers.base import MensajeEntrante
+
+    atendidos, lote = [], []
+
+    class Prov:
+        async def validar_firma(self, request):
+            return True
+        async def parsear_webhook(self, request):
+            return list(lote)
+
+    async def procesar(msg):
+        atendidos.append(msg.mensaje_id)
+
+    def mensaje(mid, texto="hola"):
+        return MensajeEntrante(telefono="+570000000001", texto=texto, mensaje_id=mid)
+
+    real_prov = main_mod.proveedor
+    main_mod.proveedor = Prov()
+    try:
+        with mock.patch.object(main_mod, "procesar_mensaje", procesar), TestClient(main_mod.app) as c:
+            mid = f"wamid.{uuid.uuid4().hex}"
+            lote[:] = [mensaje(mid)]
+            c.post("/webhook"); c.post("/webhook")
+            assert atendidos == [mid]
+            main_mod._procesados.clear()  # como si el servicio se reiniciara
+            c.post("/webhook")
+            assert atendidos == [mid]
+
+            atendidos.clear()
+            lote[:] = [mensaje(""), mensaje("")]
+            c.post("/webhook"); c.post("/webhook")
+            assert atendidos == ["", "", "", ""]  # sin id no hay cómo saber si es reintento
+
+            atendidos.clear()
+            lote[:] = [mensaje(f"vacio-{uuid.uuid4().hex}", texto="")]
+            c.post("/webhook")
+            assert atendidos == []  # sin texto ni audio no se atiende
+
+            atendidos.clear()
+            caido = f"wamid.{uuid.uuid4().hex}"
+            lote[:] = [mensaje(caido)]
+            from sqlalchemy.exc import OperationalError
+            class SesionCaida:  # la base real falla al guardar (no se reemplaza marcar_procesado)
+                async def __aenter__(self): return self
+                async def __aexit__(self, *a): return False
+                def add(self, _): pass
+                async def commit(self): raise OperationalError("INSERT", {}, Exception("conexión perdida"))
+            with mock.patch.object(main_mod.memory, "async_session", lambda: SesionCaida()):
+                c.post("/webhook"); c.post("/webhook")
+            assert atendidos == [caido]
+    finally:
+        main_mod.proveedor = real_prov
+
+
+def test_constraints_fija_todas_las_dependencias():
+    """constraints.txt fija con == cada dependencia del core (y asyncpg para PostgreSQL): una
+    dependencia nueva en pyproject sin fijar aquí rompe esta prueba."""
+    import re
+    import tomllib
+    raiz = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    norm = lambda n: re.sub(r"[-_.]+", "-", n).lower()
+    fijadas = {}
+    for linea in open(os.path.join(raiz, "constraints.txt"), encoding="utf-8"):
+        linea = linea.strip()
+        if not linea or linea.startswith("#"):
+            continue
+        m = re.fullmatch(r"([A-Za-z0-9_.-]+)==([0-9][A-Za-z0-9.+-]*)", linea)
+        assert m, f"línea sin versión exacta en constraints.txt: {linea!r}"
+        fijadas[norm(m.group(1))] = m.group(2)
+    with open(os.path.join(raiz, "pyproject.toml"), "rb") as f:
+        deps = tomllib.load(f)["project"]["dependencies"]
+    for dep in deps:
+        nombre = norm(re.match(r"[A-Za-z0-9_.-]+", dep).group(0))
+        assert nombre in fijadas, f"{nombre} no está fijada en constraints.txt"
+    for extra in ("asyncpg", "greenlet", "uvloop", "starlette", "pydantic"):
+        assert extra in fijadas, f"{extra} no está fijada en constraints.txt"
+
+
 if __name__ == "__main__":
     test_humanizar()
     test_notificar_telegram_y_sin_canal()
@@ -2101,4 +2268,7 @@ if __name__ == "__main__":
     test_nivel_de_log_por_defecto()
     test_log_sin_entrada_de_herramientas()
     test_cuerpo_chunked_y_redirecciones_de_instagram()
+    asyncio.run(_test_dedup_mensajes_procesados())
+    test_webhook_dedup_en_base()
+    test_constraints_fija_todas_las_dependencias()
     print("OK — todos los self-checks pasaron")

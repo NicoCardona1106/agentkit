@@ -42,6 +42,7 @@ Lo que el core ya trae (no lo re-implementes):
 | **Notas de voz** → texto (OpenAI `gpt-4o-mini-transcribe`) y **respuesta en voz** humana (OpenAI `gpt-audio-1.5`, voz femenina `marin`, muestra «O3» elegida por prueba de oído; guarda de fidelidad y respaldo automático `gpt-4o-mini-tts` → Gemini `Kore`; voz e instrucciones configurables en .env) | `agentkit/voz.py` |
 | **Costo en USD por agente**: cada llamada a Claude/STT/TTS queda en la tabla `uso_api`; `/estado` devuelve `costo_usd` (hoy, mes, desglose) | `agentkit/precios.py` + `agentkit/memory.py` |
 | **Reporte diario** al equipo por WhatsApp (`GET /reporte` con cabecera `X-Reporte-Token`; `?token=` sigue sirviendo) | `agentkit/reporte.py` |
+| **Mensajes procesados en la base**: un webhook reintentado por Meta/Twilio/Instagram no se responde dos veces, ni tras un reinicio (tabla `mensajes_procesados`, 7 días; si la base falla, se atiende igual) | `agentkit/memory.py` + `agentkit/main.py` |
 | **Estado del agente en JSON** para un panel externo (`GET /estado?token=...`) | `agentkit/main.py` + `agentkit/estado.py` |
 | **Modo borrador**: el admin aprueba/edita cada respuesta por WhatsApp antes de que salga (`ok N` / `no N` / `editar N texto`) | `agentkit/borrador.py` |
 | **Defensa contra inyección de instrucciones**: bloque de seguridad fijo al final de todo prompt, mensajes del cliente envueltos con id aleatorio por turno, herramienta `reportar_manipulacion` (aviso al equipo, 1/hora). NO se quita por agente. Antes de publicar un core o cambiar un prompt: `tests/ataques_prompt.py` desde la carpeta del agente. Lecciones y capas pendientes en `docs/SEGURIDAD.md` | `agentkit/brain.py` + `agentkit/herramientas.py` |
@@ -108,11 +109,19 @@ Antes de empezar, dejame verificar que tu entorno esta listo...
    - TODOS los comandos de las fases siguientes se ejecutan DESDE esa carpeta
      (`cd agentes/<nombre>` antes de pip, chat, uvicorn, git)
 3. Generar `agentes/<nombre>/requirements.txt` PINEANDO la última versión
-   (tag) del core — así el build de Docker/Railway es reproducible y
-   actualizar el agente = subir el tag en esta línea:
+   (tag) del core y sus dependencias exactas (`constraints.txt`, desde v0.8.9) —
+   así el build de Docker/Railway es reproducible y actualizar el agente = subir
+   el tag en las DOS líneas (siempre el mismo):
    ```
    agentkit @ git+https://github.com/NicoCardona1106/agentkit.git@v<ÚLTIMO_TAG>
+   -c https://raw.githubusercontent.com/NicoCardona1106/agentkit/v<ÚLTIMO_TAG>/constraints.txt
    ```
+   La línea `-c` SOLO si el tag es v0.8.9 o posterior (antes no existía el
+   archivo) y el tag ya está publicado en GitHub: si la URL da 404, pip aborta
+   todo el build. Compruébalo antes con
+   `curl -sI https://raw.githubusercontent.com/NicoCardona1106/agentkit/v<TAG>/constraints.txt` (debe dar 200).
+   Si el agente usa PostgreSQL, agrega también la línea `asyncpg` (la versión
+   la fija el constraints).
    (Verifica el último tag con `git tag` en el repo del core o en GitHub → Releases)
 4. `pip install -r requirements.txt` (desde la carpeta del agente)
 5. Confirmar: "Fase 1 completada — Entorno listo"
@@ -567,7 +576,7 @@ python -m agentkit.chat                              # test local sin WhatsApp
 uvicorn agentkit.main:app --reload --port 8000       # servidor local
 python tests/test_core.py                            # self-check del core (solo repo AgentKit)
 docker compose up --build                            # producción local
-# Actualizar un agente al core más nuevo: subir el tag en requirements.txt
-# (ej: @v0.3.0 → @v0.4.0) y pip install -r requirements.txt; en Railway basta
+# Actualizar un agente al core más nuevo: subir el tag en las dos líneas de
+# requirements.txt (core y constraints; ej: @v0.3.0 → @v0.4.0) y pip install -r requirements.txt; en Railway basta
 # con commitear ese cambio (el tag nuevo invalida la caché del build)
 ```
