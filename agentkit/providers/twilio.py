@@ -10,7 +10,7 @@ import httpx
 from fastapi import Request
 
 from agentkit.privacidad import host_permitido
-from agentkit.providers.base import MensajeEntrante, ProveedorWhatsApp
+from agentkit.providers.base import MensajeEntrante, ProveedorWhatsApp, aceptar_sin_firma
 
 # Los medios de Twilio viven en api.twilio.com (y redirigen a su CDN). Las credenciales de la cuenta
 # NUNCA salen hacia otro host: si falta PUBLIC_URL la firma no se valida y MediaUrl0 lo escribe
@@ -38,10 +38,9 @@ class ProveedorTwilio(ProveedorWhatsApp):
 
     async def validar_firma(self, request: Request) -> bool:
         if not self.auth_token:
-            return True
+            return aceptar_sin_firma("TWILIO_AUTH_TOKEN no configurado")
         if not self.public_url:
-            logger.warning("PUBLIC_URL no configurada — firma de Twilio NO validada")
-            return True
+            return aceptar_sin_firma("PUBLIC_URL no configurada (firma de Twilio)")
         firma = request.headers.get("X-Twilio-Signature", "")
         url = self.public_url + request.url.path
         if request.url.query:

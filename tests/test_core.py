@@ -2215,11 +2215,44 @@ def test_constraints_fija_todas_las_dependencias():
         assert extra in fijadas, f"{extra} no está fijada en constraints.txt"
 
 
+def test_firma_sin_secreto_falla_cerrado():
+    """Sin secreto: en producción se rechaza el webhook; fuera de producción se acepta (pruebas locales)."""
+    from agentkit.providers.instagram import ProveedorInstagram
+    from agentkit.providers.meta import ProveedorMeta
+    from agentkit.providers.twilio import ProveedorTwilio
+
+    class FakeRequest:
+        headers = {}
+        url = type("U", (), {"path": "/webhook", "query": ""})()
+        async def body(self):
+            return b"{}"
+        async def form(self):
+            return {}
+
+    claves = ("META_APP_SECRET", "IG_APP_SECRET", "TWILIO_AUTH_TOKEN", "PUBLIC_URL", "ENVIRONMENT")
+    antes = {k: os.environ.pop(k, None) for k in claves}
+    try:
+        for entorno, esperado in (("production", False), ("development", True)):
+            os.environ["ENVIRONMENT"] = entorno
+            for proveedor in (ProveedorMeta(), ProveedorInstagram(), ProveedorTwilio()):
+                assert asyncio.run(proveedor.validar_firma(FakeRequest())) is esperado, (entorno, proveedor)
+        # Twilio con token pero sin PUBLIC_URL tampoco pasa en producción
+        os.environ["ENVIRONMENT"] = "production"
+        os.environ["TWILIO_AUTH_TOKEN"] = "token"
+        assert asyncio.run(ProveedorTwilio().validar_firma(FakeRequest())) is False
+    finally:
+        for k, v in antes.items():
+            os.environ.pop(k, None)
+            if v is not None:
+                os.environ[k] = v
+
+
 if __name__ == "__main__":
     test_humanizar()
     test_notificar_telegram_y_sin_canal()
     test_firma_twilio()
     test_firma_meta()
+    test_firma_sin_secreto_falla_cerrado()
     test_instagram_parse()
     test_pagos_seleccion()
     test_voz_config()

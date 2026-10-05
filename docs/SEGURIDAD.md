@@ -38,6 +38,10 @@ no todos (aceptable; ver capa 5 abajo).
 - Derivar a humano pausa el bot.
 - **v0.8.7:** tope de gasto por agente en WhatsApp/Instagram (`TOPE_USD_DIA`/`TOPE_USD_MES`,
   `docs/TOPE-GASTO.md`).
+- **v0.8.10 (2026-10-05):** firmas que fallan cerradas. Con `ENVIRONMENT=production`, un webhook de
+  Meta, Instagram o Twilio se RECHAZA si falta su secreto (`META_APP_SECRET`/`IG_APP_SECRET`, o
+  `TWILIO_AUTH_TOKEN` + `PUBLIC_URL`) y se registra un ERROR; fuera de producción se acepta con aviso.
+  Se decide por petición y no al arrancar: un agente que solo atiende el chat web (Cora) sigue vivo.
 - **v0.8.8 (informe de seguridad 2026-10-03, arreglos que no dependen del `.env` de cada agente):**
   - Twilio solo descarga audios de `twilio.com` por https: las credenciales de la cuenta nunca salen
     hacia otro host aunque falte `PUBLIC_URL` (httpx quita `Authorization` al redirigir al CDN).
@@ -71,9 +75,7 @@ no todos (aceptable; ver capa 5 abajo).
    Nada interno ahí (socios, márgenes, planes de recuperar equipos, costos). Auditar cada agente.
 2. **Límite por número en WhatsApp** (el tope en USD por agente ya existe desde v0.8.7): mensajes por
    hora por teléfono, para que un número no queme el tope del día de todos.
-2b. **Fallar cerrado sin secretos:** que el core no arranque en producción sin `META_APP_SECRET` /
-   `IG_APP_SECRET` / `TWILIO_AUTH_TOKEN` + `PUBLIC_URL` (hoy solo avisa en el log). Hacerlo DESPUÉS de
-   confirmar el `.env` de cada agente en el VPS, para no apagar a ninguno.
+2b. ~~Fallar cerrado sin secretos~~ HECHO en v0.8.10 (por petición, no al arrancar; ver arriba).
 3. **Clave de Anthropic por agente con límite de gasto** en la consola: si una se filtra o un
    agente se desboca, el daño queda acotado y se sabe cuál fue.
 4. **Filtro de salida con canario:** una cadena única en el prompt; si aparece en una respuesta,

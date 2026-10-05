@@ -1,8 +1,26 @@
 # agentkit/providers/base.py — Interfaz común de proveedores de WhatsApp
 
+import logging
+import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from fastapi import Request
+
+logger = logging.getLogger("agentkit")
+
+
+def aceptar_sin_firma(motivo: str) -> bool:
+    """Qué hacer con un webhook cuando falta el secreto para validar su firma.
+
+    En producción se RECHAZA (fallar cerrado: sin secreto, cualquiera podría mandar webhooks falsos).
+    Fuera de producción se acepta con aviso, para probar en local. Se decide por petición y no al
+    arrancar, para no apagar un agente que no recibe webhooks (p. ej. uno que solo atiende el chat web).
+    """
+    if os.getenv("ENVIRONMENT", "development") == "production":
+        logger.error("%s — webhook RECHAZADO (ENVIRONMENT=production)", motivo)
+        return False
+    logger.warning("%s — firma NO validada (solo fuera de producción)", motivo)
+    return True
 
 
 @dataclass

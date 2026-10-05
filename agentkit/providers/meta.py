@@ -8,7 +8,7 @@ import os
 import httpx
 from fastapi import Request
 
-from agentkit.providers.base import MensajeEntrante, ProveedorWhatsApp
+from agentkit.providers.base import MensajeEntrante, ProveedorWhatsApp, aceptar_sin_firma
 
 logger = logging.getLogger("agentkit")
 
@@ -16,8 +16,7 @@ logger = logging.getLogger("agentkit")
 def firma_meta_valida(app_secret: str | None, firma_header: str, cuerpo: bytes) -> bool:
     """Valida X-Hub-Signature-256 (HMAC-SHA256 del body). Compartida por WhatsApp e Instagram."""
     if not app_secret:
-        logger.warning("App Secret no configurado — firma de webhook NO validada")
-        return True
+        return aceptar_sin_firma("App Secret no configurado")
     esperada = "sha256=" + hmac.new(app_secret.encode(), cuerpo, hashlib.sha256).hexdigest()
     return hmac.compare_digest(firma_header, esperada)
 
