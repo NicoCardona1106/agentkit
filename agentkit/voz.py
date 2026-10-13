@@ -12,7 +12,7 @@
 #     conversacional y puede cambiar el texto: la guarda es_fiel compara su transcript con lo pedido
 #     y, si no coincide (o cambia un número), descarta el audio y pasa al respaldo.
 #   - openai → gpt-4o-mini-tts, mp3 directo (respaldo 1).
-#   - gemini → gemini-2.5-flash-preview-tts, GEMINI_TTS_VOZ o TTS_VOZ (default Kore; respaldo 2).
+#   - gemini → gemini-3.8-flash-tts, GEMINI_TTS_VOZ o TTS_VOZ (default Kore; respaldo 2).
 #     Devuelve PCM: requiere ffmpeg para mp3. Usar una key con facturación activa: en el tier
 #     gratis Google puede entrenar con los datos (choca con la Ley 1581 frente al cliente).
 #   Las dos de OpenAI usan OPENAI_TTS_VOZ o TTS_VOZ (default marin).
@@ -309,9 +309,8 @@ def _texto_gemini(texto: str, modelo: str) -> str:
     """Gemini 2.5 no tiene campo de instrucciones: el estilo va antepuesto al texto:
     las instrucciones, una línea en blanco y el texto (formato con el que se generó la muestra elegida en la prueba de
     oído, donde el modelo interpretó el estilo sin leerlo en voz alta).
-    OJO: Gemini 3.8 TTS trata el texto como transcripción literal y LEERÍA el estilo en voz alta
-    (pide `speech_metadata.style`, y además devuelve WAV y no PCM); por eso el prefijo solo va a los
-    modelos anteriores y 3.8 no es un cambio de TTS_MODELO sin adaptar el código y probar de oído."""
+    OJO: Gemini 3.8 TTS trata el texto como transcripción literal y LEERÍA el estilo en voz alta; por eso el
+    prefijo solo va a los modelos anteriores y en 3.8 el estilo viaja aparte (speechMetadata, ver _sintetizar_gemini)."""
     instrucciones = os.getenv("TTS_INSTRUCCIONES", INSTRUCCIONES_GEMINI).strip()
     if instrucciones and modelo.startswith(("gemini-2.", "gemini-3.1-")):
         return f"{instrucciones}\n\n{texto}"
@@ -319,20 +318,25 @@ def _texto_gemini(texto: str, modelo: str) -> str:
 
 
 async def _sintetizar_gemini(texto: str, modelo: str) -> bytes | None:
-    """Gemini TTS devuelve PCM crudo (24kHz, 16-bit, mono) — se convierte a mp3 con ffmpeg."""
+    """Gemini TTS devuelve PCM crudo (24kHz, 16-bit, mono) — se convierte a mp3 con ffmpeg.
+    Gemini 3.8 devuelve WAV por defecto: se pide AUDIO_L16 a 24kHz para seguir recibiendo PCM crudo, y el estilo
+    va en speechMetadata.style (ai.google.dev/gemini-api/docs/speech-generation, guía de migración, 2026-10-13)."""
+    parte = {"text": _texto_gemini(texto, modelo)}
+    config = {
+        "responseModalities": ["AUDIO"],
+        "speechConfig": {"voiceConfig": {"prebuiltVoiceConfig": {
+            "voiceName": _opcion("gemini", ("GEMINI_TTS_VOZ", "TTS_VOZ"), "Kore", VOCES_GEMINI.__contains__)}}},
+    }
+    if modelo.startswith("gemini-3.8-"):
+        estilo = os.getenv("TTS_INSTRUCCIONES", INSTRUCCIONES_GEMINI).strip()
+        if estilo:
+            parte["speechMetadata"] = {"style": estilo}
+        config["responseFormat"] = {"audio": {"mimeType": "AUDIO_L16", "sampleRate": 24000}}
     async with httpx.AsyncClient(timeout=TIMEOUT_TTS) as client:
         r = await client.post(
             f"https://generativelanguage.googleapis.com/v1beta/models/{modelo}:generateContent",
             headers={"x-goog-api-key": os.getenv("GEMINI_API_KEY")},
-            json={
-                "contents": [{"parts": [{"text": _texto_gemini(texto, modelo)}]}],
-                "generationConfig": {
-                    "responseModalities": ["AUDIO"],
-                    "speechConfig": {"voiceConfig": {"prebuiltVoiceConfig": {
-                        "voiceName": _opcion("gemini", ("GEMINI_TTS_VOZ", "TTS_VOZ"), "Kore",
-                                             VOCES_GEMINI.__contains__)}}},
-                },
-            },
+            json={"contents": [{"parts": [parte]}], "generationConfig": config},
         )
         if r.status_code != 200:
             logger.error(f"Error TTS Gemini: {r.status_code} — {r.text}")
@@ -363,14 +367,14 @@ async def _pcm_a_mp3(pcm: bytes) -> bytes | None:
 
 # proveedor → (variable de la key, función texto→mp3, modelo por defecto, ¿el modelo es suyo?).
 # El orden es la prioridad sin TTS_PROVEEDOR: gpt-audio (muestra O3), luego los respaldos.
-# gemini-3.8-flash-tts existe y es la sucesora si el preview 2.5 se retira: no cambiar el default
-# sin prueba de oído (ver _texto_gemini).
+# Gemini: migrado a gemini-3.8-flash-tts el 2026-10-13 (Google apaga el 2.5-preview el 2026-11-17);
+# prueba de oído con Nicolas pendiente antes de publicar la versión (ver _texto_gemini).
 _TTS = {
     "openai-audio": ("OPENAI_API_KEY", _sintetizar_openai_audio, "gpt-audio-1.5",
                      lambda m: m.startswith("gpt-audio")),
     "openai": ("OPENAI_API_KEY", _sintetizar_openai, "gpt-4o-mini-tts",
                lambda m: m.startswith(("gpt-", "tts-")) and not m.startswith("gpt-audio")),
-    "gemini": ("GEMINI_API_KEY", _sintetizar_gemini, "gemini-2.5-flash-preview-tts",
+    "gemini": ("GEMINI_API_KEY", _sintetizar_gemini, "gemini-3.8-flash-tts",
                lambda m: m.startswith("gemini-")),
 }
 # Respaldos, en orden, si el primero falla o gpt-audio no pasa la guarda. gpt-audio no es respaldo

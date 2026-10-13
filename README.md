@@ -134,7 +134,7 @@ sienta humano en todo momento, calidad antes que precio.
   (carro → moto) puede pasar.
 - **Respaldo automático:** si `gpt-audio` falla o no pasa la guarda, habla
   `gpt-4o-mini-tts` (voz `marin`, misma `OPENAI_API_KEY`) y, si también falla,
-  Gemini `gemini-2.5-flash-preview-tts` voz `Kore` (si hay `GEMINI_API_KEY`).
+  Gemini `gemini-3.8-flash-tts` voz `Kore` (si hay `GEMINI_API_KEY`).
   Si todo falla, o si la voz no está lista en `VOZ_TIMEOUT_TOTAL` segundos
   (default 45; cada llamada tiene además su propio timeout), la respuesta sale
   en texto.
@@ -160,7 +160,7 @@ Todo se cambia en el `.env` y se aplica al reiniciar el agente:
 | `VOZ_TIMEOUT_TOTAL` | `45` | Segundos máximos para tener la nota de voz (principal + respaldos); si vence, la respuesta sale en texto |
 | `GEMINI_TTS_VOZ` / `OPENAI_TTS_VOZ` | — | Voz solo para ese proveedor (`OPENAI_TTS_VOZ` vale para `gpt-audio` y `gpt-4o-mini-tts`); gana sobre `TTS_VOZ` |
 | `TTS_INSTRUCCIONES` | OpenAI: el estilo «fluido» de la muestra O3 (español de Colombia, cálido y cercano, de corrido, sin pausas largas, nada de locutor ni robot). Gemini: el estilo de su muestra Kore | Cómo habla: tono, acento, ritmo. Texto libre, p. ej. `TTS_INSTRUCCIONES="Habla como una recepcionista paisa, alegre y sin afanes"`. `gpt-audio` la recibe en el mensaje system seguida de una cláusula fija («di palabra por palabra el mensaje del usuario, no agregues ni quites nada»); `gpt-4o-mini-tts` en su campo `instructions`; Gemini no tiene ese campo y la recibe **antepuesta al texto**: `instrucciones`, una línea en blanco y el texto |
-| `TTS_MODELO` | `gpt-audio-1.5` / `gpt-4o-mini-tts` / `gemini-2.5-flash-preview-tts` | Modelo de voz de salida; cada proveedor ignora el que no es suyo. `gemini-3.8-flash-tts` es el sucesor si el preview se retira, pero lee el texto literal (leería las instrucciones) y devuelve WAV: no cambiarlo sin adaptar el core y repetir la prueba de oído |
+| `TTS_MODELO` | `gpt-audio-1.5` / `gpt-4o-mini-tts` / `gemini-3.8-flash-tts` | Modelo de voz de salida; cada proveedor ignora el que no es suyo. Gemini migró del `2.5-flash-preview-tts` (Google lo apaga el 2026-11-17) al 3.8: el core pide PCM y manda el estilo en `speechMetadata`. Un `.env` que fije el 2.5 sigue usándolo hasta que Google lo apague: cambiarlo o borrar la variable |
 | `STT_PROVEEDOR` | `openai` | `groq` para transcribir gratis con `GROQ_API_KEY` |
 | `VOZ_MODELO` | `gpt-4o-mini-transcribe` (OpenAI) / `whisper-large-v3` (Groq) | Modelo de transcripción |
 

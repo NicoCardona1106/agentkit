@@ -53,6 +53,7 @@ PRECIOS: dict[str, dict[str, str]] = {
     "gpt-4o-mini-tts": {"minuto": "0.015"},
     # Gemini: USD 10/M tokens de audio (2.5 Flash) y 9/M (3.8 Flash, hasta 2026-12-31; 18/M desde
     # 2027-01-01), a 25 tokens por segundo de audio.
+    # Default: gemini-3.8-flash-tts. El 2.5 se deja para leer históricos (Google lo apaga el 2026-11-17).
     "gemini-2.5-flash-preview-tts": {"minuto": "0.015"},
     "gemini-3.8-flash-tts": {"minuto": "0.0135"},
     # TTS por Chat Completions con audio (voz O3): USD por millón de tokens, verificado el 2026-09-25

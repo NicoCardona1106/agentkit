@@ -515,7 +515,7 @@ def test_voz_valores_de_otro_proveedor():
 
     from agentkit import memory, voz
 
-    viejas = {"VOZ_MODELO": "whisper-large-v3", "TTS_MODELO": "gemini-2.5-flash-preview-tts",
+    viejas = {"VOZ_MODELO": "whisper-large-v3", "TTS_MODELO": "gemini-3.8-flash-tts",
               "TTS_VOZ": "Kore"}
     todas = ("OPENAI_API_KEY", "GROQ_API_KEY", "GEMINI_API_KEY", "STT_PROVEEDOR", "TTS_PROVEEDOR",
              "VOZ_MODELO", "TTS_MODELO", "TTS_VOZ", "OPENAI_TTS_VOZ", "GEMINI_TTS_VOZ", "TTS_INSTRUCCIONES")
@@ -568,18 +568,25 @@ def test_voz_valores_de_otro_proveedor():
         os.environ.pop("TTS_PROVEEDOR")
         os.environ.update({"GEMINI_API_KEY": "AIza-test", "TTS_VOZ": "marin", "TTS_MODELO": "gpt-4o-mini-tts"})
         assert asyncio.run(voz.sintetizar("hola")) == b"mp3-gemini"
-        assert "gemini-2.5-flash-preview-tts" in str(enviados[-1].url)
+        assert voz._TTS["gemini"][2] == "gemini-3.8-flash-tts"  # default del proveedor
+        assert "gemini-3.8-flash-tts" in str(enviados[-1].url)
         cuerpo = json.loads(enviados[-1].content)
         voz_gemini = cuerpo["generationConfig"]["speechConfig"]
         assert voz_gemini["voiceConfig"]["prebuiltVoiceConfig"]["voiceName"] == "Kore"
-        # Gemini no tiene campo instructions: el estilo va antepuesto, como en la prueba de oído
-        assert cuerpo["contents"][0]["parts"][0]["text"] == f"{voz.INSTRUCCIONES_GEMINI}\n\nhola"
+        # 3.8 lee el texto literal: el estilo va en speechMetadata y se pide PCM crudo (el default sería WAV)
+        parte = cuerpo["contents"][0]["parts"][0]
+        assert parte["text"] == "hola" and parte["speechMetadata"] == {"style": voz.INSTRUCCIONES_GEMINI}
+        assert cuerpo["generationConfig"]["responseFormat"] == {"audio": {"mimeType": "AUDIO_L16", "sampleRate": 24000}}
         os.environ["TTS_INSTRUCCIONES"] = "Habla como paisa"
         asyncio.run(voz.sintetizar("hola"))
-        assert json.loads(enviados[-1].content)["contents"][0]["parts"][0]["text"] == "Habla como paisa\n\nhola"
-        os.environ["TTS_MODELO"] = "gemini-3.8-flash-tts"  # lee el texto literal: sin prefijo
+        assert json.loads(enviados[-1].content)["contents"][0]["parts"][0]["speechMetadata"] == {"style": "Habla como paisa"}
+        # Modelo anterior (2.5, aún válido en un .env viejo): sin speechMetadata ni responseFormat, estilo antepuesto
+        os.environ["TTS_MODELO"] = "gemini-2.5-flash-preview-tts"
         asyncio.run(voz.sintetizar("hola"))
-        assert json.loads(enviados[-1].content)["contents"][0]["parts"][0]["text"] == "hola"
+        cuerpo = json.loads(enviados[-1].content)
+        assert "gemini-2.5-flash-preview-tts" in str(enviados[-1].url)
+        assert cuerpo["contents"][0]["parts"][0] == {"text": "Habla como paisa\n\nhola"}
+        assert "responseFormat" not in cuerpo["generationConfig"]
         os.environ["TTS_MODELO"] = "gpt-4o-mini-tts"
         os.environ["GEMINI_TTS_VOZ"] = "Puck"
         asyncio.run(voz.sintetizar("hola"))
