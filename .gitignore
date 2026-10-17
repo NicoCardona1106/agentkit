@@ -40,3 +40,13 @@ Thumbs.db
 
 # Node (si se usa para Claude Code)
 node_modules/
+
+# Internos (no públicos): configuración local de Claude y documentos de negocio
+.claude/settings.local.json
+docs/definiciones-venta-agentes.md
+docs/SRS-instagram-comentarios.md
+docs/SRS-instagram-comentarios.pdf
+docs/RETENCION-DATOS.md
+docs/bitacora-*.md
+docs/BLUEPRINT-instagram.md
+AgentKit-precios-*.pdf

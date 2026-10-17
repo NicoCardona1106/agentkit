@@ -1,7 +1,19 @@
-# AgentKit — AI Agent Builder (WhatsApp e Instagram)
+# AgentKit — agentes de IA para WhatsApp e Instagram
 
-Construye tu propio agente de IA para WhatsApp o Instagram en menos de 30 minutos.
-No necesitas saber programar. Claude Code te entrevista y configura todo por ti.
+[![Pruebas](https://github.com/NicoCardona1106/agentkit/actions/workflows/pruebas.yml/badge.svg)](https://github.com/NicoCardona1106/agentkit/actions/workflows/pruebas.yml)
+
+Núcleo en Python (FastAPI + Claude) para montar un agente conversacional con memoria, herramientas, voz,
+pagos y control de gasto. Un agente = una carpeta pequeña que usa este core.
+
+Probar en local (Python 3.11+):
+
+```bash
+git clone https://github.com/NicoCardona1106/agentkit.git && cd agentkit
+pip install -e . -c constraints.txt pytest
+pytest tests/test_core.py        # 48 pruebas, sin red ni llaves de API
+```
+
+Para crear tu propio agente sin programar, sigue la guía de abajo: Claude Code te entrevista y configura todo.
 
 ---
 
