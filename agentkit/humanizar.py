@@ -31,12 +31,15 @@ def pausa_escritura(texto: str) -> float:
     return min(len(texto) / 40, 3.0)
 
 
-async def enviar_humanizado(proveedor: ProveedorWhatsApp, telefono: str, texto: str):
-    """Envía la respuesta en burbujas con pausas. Con HUMANIZAR=false envía un solo mensaje."""
+async def enviar_humanizado(proveedor: ProveedorWhatsApp, telefono: str, texto: str) -> bool:
+    """Envía la respuesta en burbujas con pausas. Con HUMANIZAR=false envía un solo mensaje.
+    Devuelve True solo si TODAS las burbujas salieron; si una falla, no envía las que siguen."""
     if os.getenv("HUMANIZAR", "true").lower() != "true":
-        await proveedor.enviar_mensaje(telefono, texto)
-        return
-    for i, burbuja in enumerate(partir_en_burbujas(texto)):
+        return bool(await proveedor.enviar_mensaje(telefono, texto))
+    burbujas = partir_en_burbujas(texto)
+    for i, burbuja in enumerate(burbujas):
         if i > 0:
             await asyncio.sleep(pausa_escritura(burbuja))
-        await proveedor.enviar_mensaje(telefono, burbuja)
+        if not await proveedor.enviar_mensaje(telefono, burbuja):
+            return False  # se corta: no sale un texto con huecos
+    return bool(burbujas)  # un texto vacío no se envió

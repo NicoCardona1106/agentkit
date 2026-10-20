@@ -92,7 +92,7 @@ y la configuración del webhook en Meta o Twilio).
   (leads, tickets, conversaciones) al equipo por WhatsApp.
 - `GET /estado?token=<REPORTE_TOKEN>` — estado del agente en JSON para un
   panel externo (versión, proveedor, modelo, uptime, modo borrador, cifras
-  de las últimas 24h, tickets abiertos, borradores pendientes, errores y
+  de las últimas 24h, tickets abiertos, borradores pendientes y `borradores_sin_aviso`, errores y
   `costo_usd`: gasto en APIs de hoy y del mes en hora de Bogotá, con desglose
   del mes en `llm`/`stt`/`tts`, montos como texto decimal, p. ej. `"0.012345"`,
   y `modelos_sin_precio`: modelos usados este mes que se registraron con costo 0

@@ -23,6 +23,15 @@ def aceptar_sin_firma(motivo: str) -> bool:
     return True
 
 
+def resumen_error(r) -> str:
+    """«HTTP 400 (código 190)» de una respuesta de Graph. Nunca el cuerpo: puede traer datos del cliente."""
+    try:
+        codigo = r.json().get("error", {}).get("code")
+    except Exception:
+        codigo = None
+    return f"HTTP {r.status_code}" + (f" (código {codigo})" if codigo is not None else "")
+
+
 @dataclass
 class MensajeEntrante:
     """Mensaje normalizado — mismo formato sin importar el proveedor."""

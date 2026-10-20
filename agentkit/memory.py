@@ -3,13 +3,15 @@
 
 import asyncio
 import hashlib
+import json
 import logging
 import os
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 from dotenv import find_dotenv, load_dotenv
-from sqlalchemy import DateTime, Float, Integer, String, Text, delete, func, inspect, or_, select, text
+from sqlalchemy import (BigInteger, DateTime, Float, Integer, String, Text, delete, func, inspect, or_,
+                        select, text, update)
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -22,7 +24,8 @@ if DATABASE_URL.startswith("postgresql://"):
 
 logger = logging.getLogger("agentkit")
 
-engine = create_async_engine(DATABASE_URL, echo=False)
+# hide_parameters: un OperationalError no vuelca en el log los valores del INSERT (texto ni teléfono del cliente)
+engine = create_async_engine(DATABASE_URL, echo=False, hide_parameters=True)
 async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
 
@@ -81,8 +84,21 @@ class Borrador(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     telefono: Mapped[str] = mapped_column(String(50), index=True)
     texto: Mapped[str] = mapped_column(Text)
-    estado: Mapped[str] = mapped_column(String(20), default="pendiente")  # pendiente | enviado | descartado
+    # pendiente | enviando | enviado | fallo_envio | descartado | reemplazado | vencido
+    estado: Mapped[str] = mapped_column(String(20), default="pendiente")
     creado: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    # Desde v0.9.0 (F5a). Nulas en los borradores creados con v0.8.11: _migrar_columnas_nuevas las agrega.
+    mensajes_cliente: Mapped[str | None] = mapped_column(Text, nullable=True)  # lista JSON de mensajes sin responder
+    vence: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # último mensaje del cliente + 23 h 45 min
+    tg_chat_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)  # dónde se avisó por Telegram
+    tg_message_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    version_texto: Mapped[str | None] = mapped_column(Text, nullable=True)  # versión editada, esperando confirmación
+    version_msg_id: Mapped[int | None] = mapped_column(Integer, nullable=True)  # mensaje de Telegram que la confirma
+    sin_aviso: Mapped[int | None] = mapped_column(Integer, default=0)  # 1 = no llegó por ningún canal
+    decidido_por: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    canal: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    resuelto_en: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    reemplazado_por: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 class UsoApi(Base):
@@ -123,6 +139,16 @@ async def inicializar_db():
         await _migrar_columnas_nuevas(conn)
 
 
+VIGENCIA = timedelta(hours=23, minutes=45)  # RF-57: 15 min antes de que cierre la ventana de 24 h
+
+_COLUMNAS_BORRADOR = (
+    ("mensajes_cliente", "TEXT"), ("vence", "TIMESTAMP"), ("tg_chat_id", "BIGINT"),
+    ("tg_message_id", "INTEGER"), ("version_texto", "TEXT"), ("version_msg_id", "INTEGER"),
+    ("sin_aviso", "INTEGER DEFAULT 0"), ("decidido_por", "VARCHAR(60)"), ("canal", "VARCHAR(20)"),
+    ("resuelto_en", "TIMESTAMP"), ("reemplazado_por", "INTEGER"),
+)
+
+
 async def _migrar_columnas_nuevas(conn):
     """Migración idempotente: agrega columnas nuevas a tablas que ya existían sin ellas.
     create_all solo crea tablas que faltan, nunca altera una existente — en un agente con
@@ -134,6 +160,26 @@ async def _migrar_columnas_nuevas(conn):
         await conn.execute(text("ALTER TABLE uso_api ADD COLUMN telefono VARCHAR(50)"))
     if "contacto" not in await conn.run_sync(columnas, "leads"):
         await conn.execute(text("ALTER TABLE leads ADD COLUMN contacto VARCHAR(200) DEFAULT ''"))
+
+    # Borradores de v0.8.11 → v0.9.0 (columnas nuevas nulas, índice si no existe)
+    if "borradores" in await conn.run_sync(lambda c: set(inspect(c).get_table_names())):
+        existentes = await conn.run_sync(columnas, "borradores")
+        for nombre, tipo in _COLUMNAS_BORRADOR:
+            if nombre not in existentes:
+                await conn.execute(text(f"ALTER TABLE borradores ADD COLUMN {nombre} {tipo}"))
+        # v0.8.11 permitía varios pendientes por teléfono: queda el más reciente, para poder crear el índice
+        await conn.execute(text(
+            "UPDATE borradores SET estado = 'reemplazado', resuelto_en = CURRENT_TIMESTAMP "
+            "WHERE estado = 'pendiente' AND id NOT IN "
+            "(SELECT MAX(id) FROM borradores WHERE estado = 'pendiente' GROUP BY telefono)"))
+        # Un pendiente de v0.8.11 no tiene `vence`: vence a creado + 23 h 45 min, como los nuevos
+        for bid, creado in (await conn.execute(select(Borrador.id, Borrador.creado).where(
+                Borrador.estado == "pendiente", Borrador.vence.is_(None)))).all():
+            if creado:
+                await conn.execute(update(Borrador).where(Borrador.id == bid).values(vence=creado + VIGENCIA))
+        await conn.execute(text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_borradores_pendiente ON borradores (telefono) "
+            "WHERE estado = 'pendiente'"))
 
 
 # ── Mensajes ya procesados (dedup de webhooks) ────────────────
@@ -288,26 +334,192 @@ async def conversacion_pausada(telefono: str) -> bool:
 
 # ── Borradores (MODO_BORRADOR) ────────────────────────────────
 
-async def crear_borrador(telefono: str, texto: str) -> int:
+MAX_MENSAJES_SIN_RESPONDER = 10
+
+
+def _fila(b: Borrador) -> dict:
+    return {"id": b.id, "telefono": b.telefono, "texto": b.texto, "estado": b.estado, "vence": b.vence,
+            "mensajes": json.loads(b.mensajes_cliente) if b.mensajes_cliente else [],
+            "tg_chat_id": b.tg_chat_id, "tg_message_id": b.tg_message_id,
+            "version_texto": b.version_texto, "version_msg_id": b.version_msg_id,
+            "sin_aviso": b.sin_aviso, "decidido_por": b.decidido_por, "canal": b.canal,
+            "resuelto_en": b.resuelto_en, "reemplazado_por": b.reemplazado_por}
+
+
+async def crear_borrador(telefono: str, texto: str, mensaje_cliente: str = "",
+                         vence: datetime | None = None, ahora: datetime | None = None) -> int:
+    """Crea el borrador y deja «reemplazado» al pendiente anterior de esa conversación (solo hay uno,
+    índice único parcial). Los mensajes sin responder del anterior pasan al nuevo."""
+    ahora = ahora or datetime.utcnow()
+    for _ in range(3):  # dos creaciones a la vez: la segunda choca con el índice y reintenta
+        try:
+            async with async_session() as session:
+                # Un solo UPDATE ... RETURNING: junta EXACTAMENTE lo que reemplazó (un SELECT aparte
+                # perdía los mensajes de otro borrador creado a la vez)
+                previos = sorted((await session.execute(update(Borrador).where(
+                    Borrador.telefono == telefono, Borrador.estado == "pendiente").values(
+                    estado="reemplazado", resuelto_en=ahora).returning(
+                    Borrador.id, Borrador.mensajes_cliente).execution_options(synchronize_session=False))).all())
+                mensajes = [m for _, js in previos for m in (json.loads(js) if js else [])]
+                if mensaje_cliente:
+                    mensajes.append(mensaje_cliente)
+                b = Borrador(telefono=telefono, texto=texto, vence=vence, sin_aviso=0, creado=ahora,
+                             mensajes_cliente=json.dumps(mensajes[-MAX_MENSAJES_SIN_RESPONDER:], ensure_ascii=False))
+                session.add(b)
+                await session.flush()
+                if previos:
+                    await session.execute(update(Borrador).where(
+                        Borrador.id.in_([i for i, _ in previos])).values(reemplazado_por=b.id))
+                await session.commit()
+                return b.id
+        except IntegrityError:
+            continue
+    raise RuntimeError("No se pudo crear el borrador: otro igual se creaba a la vez")
+
+
+async def resolver_borrador(bid: int, estado: str, texto: str = "", decidido_por: str = "",
+                            canal: str = "", ahora: datetime | None = None) -> dict | None:
+    """Pasa un borrador de «pendiente» a `estado` en UN solo UPDATE: si dos canales deciden a la vez,
+    solo uno ve rowcount == 1 y el otro recibe None. Tampoco pasa si venció (aunque el barrido no corrió).
+    Devuelve el borrador ya resuelto, o None si no existe, ya se resolvió, fue reemplazado o venció."""
+    ahora = ahora or datetime.utcnow()
+    valores = {"estado": estado, "decidido_por": decidido_por or None, "canal": canal or None,
+               "resuelto_en": ahora}
+    if texto:
+        valores["texto"] = texto
     async with async_session() as session:
-        b = Borrador(telefono=telefono, texto=texto)
-        session.add(b)
+        r = await session.execute(update(Borrador).where(
+            Borrador.id == bid, Borrador.estado == "pendiente",
+            or_(Borrador.vence.is_(None), Borrador.vence > ahora)).values(**valores))
         await session.commit()
-        return b.id
+        if r.rowcount != 1:
+            return None
+        return _fila(await session.get(Borrador, bid))
 
 
-async def resolver_borrador(bid: int, estado: str, texto: str = "") -> dict | None:
-    """Marca un borrador pendiente como enviado/descartado.
-    Devuelve {telefono, texto} o None si no existe o ya fue resuelto."""
+async def cerrar_envio(bid: int, ok: bool):
+    """Tras enviar: «enviado» solo si TODAS las burbujas salieron; si no, «fallo_envio» (nunca vuelve a pendiente)."""
+    async with async_session() as session:
+        await session.execute(update(Borrador).where(Borrador.id == bid, Borrador.estado == "enviando").values(
+            estado="enviado" if ok else "fallo_envio"))
+        await session.commit()
+
+
+async def obtener_borrador(bid: int) -> dict | None:
     async with async_session() as session:
         b = await session.get(Borrador, bid)
-        if not b or b.estado != "pendiente":
-            return None
-        b.estado = estado
-        if texto:
-            b.texto = texto
+        return _fila(b) if b else None
+
+
+async def motivo_no_resuelto(bid: int, ahora: datetime) -> tuple[str, dict | None]:
+    """Por qué un borrador no se pudo decidir: no_existe | vencido | reemplazado | resuelto."""
+    b = await obtener_borrador(bid)
+    if not b:
+        return "no_existe", None
+    if b["estado"] == "vencido" or (b["estado"] == "pendiente" and b["vence"] and b["vence"] <= ahora):
+        return "vencido", b
+    return ("reemplazado" if b["estado"] == "reemplazado" else "resuelto"), b
+
+
+async def vencer_borrador(bid: int, ahora: datetime) -> dict | None:
+    """pendiente → vencido si ya pasó `vence`. Devuelve el borrador solo si ESTA llamada lo venció."""
+    async with async_session() as session:
+        r = await session.execute(update(Borrador).where(
+            Borrador.id == bid, Borrador.estado == "pendiente", Borrador.vence.is_not(None),
+            Borrador.vence <= ahora).values(estado="vencido", resuelto_en=ahora))
         await session.commit()
-        return {"telefono": b.telefono, "texto": b.texto}
+        return _fila(await session.get(Borrador, bid)) if r.rowcount == 1 else None
+
+
+async def huerfanos_enviando(antes_de: datetime) -> list[dict]:
+    """Borradores que quedaron en «enviando» desde antes de `antes_de` (el proceso murió, lo cancelaron o la
+    base falló entre resolver y cerrar el envío): pasan a «fallo_envio». Devuelve los que pasaron."""
+    async with async_session() as session:
+        filas = (await session.execute(update(Borrador).where(
+            Borrador.estado == "enviando", Borrador.resuelto_en < antes_de).values(
+            estado="fallo_envio").returning(
+            Borrador.id, Borrador.telefono, Borrador.tg_chat_id, Borrador.tg_message_id,
+            Borrador.version_msg_id).execution_options(synchronize_session=False))).all()
+        await session.commit()
+        return [dict(f._mapping) for f in filas]
+
+
+async def ids_vencidos(ahora: datetime) -> list[int]:
+    async with async_session() as session:
+        q = select(Borrador.id).where(Borrador.estado == "pendiente", Borrador.vence.is_not(None),
+                                      Borrador.vence <= ahora)
+        return list((await session.execute(q)).scalars().all())
+
+
+async def reemplazados_por(bid: int) -> list[dict]:
+    async with async_session() as session:
+        q = select(Borrador).where(Borrador.reemplazado_por == bid)
+        return [_fila(b) for b in (await session.execute(q)).scalars().all()]
+
+
+async def ultimo_mensaje_cliente(telefono: str) -> datetime | None:
+    async with async_session() as session:
+        return (await session.execute(select(func.max(Mensaje.timestamp)).where(
+            Mensaje.telefono == telefono, Mensaje.role == "user"))).scalar()
+
+
+async def marcar_sin_aviso(bid: int):
+    async with async_session() as session:
+        await session.execute(update(Borrador).where(Borrador.id == bid).values(sin_aviso=1))
+        await session.commit()
+
+
+async def guardar_aviso_telegram(bid: int, chat_id: int, message_id: int):
+    """Dónde quedó el aviso: las decisiones de Telegram se mapean por (chat, mensaje) → borrador."""
+    async with async_session() as session:
+        await session.execute(update(Borrador).where(Borrador.id == bid).values(
+            tg_chat_id=chat_id, tg_message_id=message_id))
+        await session.commit()
+
+
+async def borrador_por_mensaje_tg(chat_id: int, message_id: int) -> tuple[dict, str] | None:
+    """El borrador de un mensaje de Telegram y su rol: «aviso» (el del borrador) o «version» (el que pide
+    confirmar una edición). None si ese mensaje no está registrado."""
+    if not isinstance(message_id, int) or isinstance(message_id, bool):
+        return None
+    async with async_session() as session:
+        b = (await session.execute(select(Borrador).where(
+            Borrador.tg_chat_id == chat_id,
+            or_(Borrador.tg_message_id == message_id, Borrador.version_msg_id == message_id)
+        ).order_by(Borrador.id.desc()))).scalars().first()
+        if not b:
+            return None
+        return _fila(b), ("aviso" if b.tg_message_id == message_id else "version")
+
+
+async def guardar_version(bid: int, texto: str, ahora: datetime) -> dict | None:
+    """Guarda una versión editada (queda sin confirmar). Solo si el borrador sigue pendiente y vigente.
+    Devuelve {version_msg_id} del mensaje de confirmación anterior, si había, o None si no se pudo."""
+    async with async_session() as session:
+        previo = await session.get(Borrador, bid)
+        previo_msg = previo.version_msg_id if previo else None
+        r = await session.execute(update(Borrador).where(
+            Borrador.id == bid, Borrador.estado == "pendiente",
+            or_(Borrador.vence.is_(None), Borrador.vence > ahora)).values(
+            version_texto=texto, version_msg_id=None))
+        await session.commit()
+        return {"version_msg_id": previo_msg} if r.rowcount == 1 else None
+
+
+async def guardar_msg_version(bid: int, message_id: int):
+    async with async_session() as session:
+        await session.execute(update(Borrador).where(Borrador.id == bid).values(version_msg_id=message_id))
+        await session.commit()
+
+
+async def limpiar_version(bid: int, message_id: int) -> bool:
+    """Cancela la versión cuyo mensaje de confirmación es `message_id` (si sigue siendo la vigente)."""
+    async with async_session() as session:
+        r = await session.execute(update(Borrador).where(
+            Borrador.id == bid, Borrador.version_msg_id == message_id).values(
+            version_texto=None, version_msg_id=None))
+        await session.commit()
+        return r.rowcount == 1
 
 
 async def borradores_pendientes(limite: int = 10) -> list[dict]:
@@ -316,6 +528,15 @@ async def borradores_pendientes(limite: int = 10) -> list[dict]:
              .order_by(Borrador.id.desc()).limit(limite))
         return [{"id": b.id, "telefono": b.telefono, "texto": b.texto}
                 for b in (await session.execute(q)).scalars().all()]
+
+
+async def _contar_sin_aviso(session) -> int:
+    """Borradores de las últimas 24h que no llegaron por ningún canal y siguen sin resolverse
+    (pendientes o vencidos): ninguno se pierde en silencio."""
+    desde = datetime.utcnow() - timedelta(hours=24)
+    return (await session.execute(select(func.count()).select_from(Borrador).where(
+        Borrador.sin_aviso == 1, Borrador.estado.in_(("pendiente", "vencido")),
+        Borrador.creado >= desde))).scalar() or 0
 
 
 # ── Reporte diario ────────────────────────────────────────────
@@ -333,6 +554,7 @@ async def resumen_dia() -> dict:
             "conversaciones": conversaciones,
             "leads": [{"nombre": l.nombre, "interes": l.interes, "telefono": l.telefono} for l in leads],
             "tickets": [{"id": t.id, "problema": t.problema, "telefono": t.telefono} for t in tickets],
+            "borradores_sin_aviso": await _contar_sin_aviso(session),
         }
 
 
@@ -369,6 +591,7 @@ async def resumen_estado() -> dict:
             "tickets_abiertos": tickets_abiertos,
             "ultimo_mensaje": ultimo.isoformat() + "Z" if ultimo else None,
             "borradores_pendientes": borradores,
+            "borradores_sin_aviso": await _contar_sin_aviso(session),
         }
 
 

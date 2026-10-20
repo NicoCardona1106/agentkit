@@ -8,7 +8,7 @@ import os
 import httpx
 from fastapi import Request
 
-from agentkit.providers.base import MensajeEntrante, ProveedorWhatsApp, aceptar_sin_firma
+from agentkit.providers.base import MensajeEntrante, ProveedorWhatsApp, aceptar_sin_firma, resumen_error
 
 logger = logging.getLogger("agentkit")
 
@@ -72,7 +72,7 @@ class ProveedorMeta(ProveedorWhatsApp):
         async with httpx.AsyncClient() as client:
             r = await client.post(url, json=payload, headers={"Authorization": f"Bearer {self.access_token}"})
             if r.status_code != 200:
-                logger.error(f"Error Meta API: {r.status_code} — {r.text}")
+                logger.error(f"Error Meta API: {resumen_error(r)}")
             return r.status_code == 200
 
     async def enviar_audio_url(self, telefono: str, audio_url: str) -> bool:
@@ -83,7 +83,7 @@ class ProveedorMeta(ProveedorWhatsApp):
         async with httpx.AsyncClient() as client:
             r = await client.post(url, json=payload, headers={"Authorization": f"Bearer {self.access_token}"})
             if r.status_code != 200:
-                logger.error(f"Error Meta API (audio): {r.status_code} — {r.text}")
+                logger.error(f"Error Meta API (audio): {resumen_error(r)}")
             return r.status_code == 200
 
     async def descargar_audio(self, audio_ref: str) -> bytes | None:
@@ -92,7 +92,7 @@ class ProveedorMeta(ProveedorWhatsApp):
         async with httpx.AsyncClient() as client:
             r = await client.get(f"https://graph.facebook.com/{self.api_version}/{audio_ref}", headers=headers)
             if r.status_code != 200:
-                logger.error(f"Error resolviendo media de Meta: {r.text}")
+                logger.error(f"Error resolviendo media de Meta: {resumen_error(r)}")
                 return None
             media_url = r.json().get("url")
             r2 = await client.get(media_url, headers=headers)

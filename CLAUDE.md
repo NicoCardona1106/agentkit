@@ -44,7 +44,7 @@ Lo que el core ya trae (no lo re-implementes):
 | **Reporte diario** al equipo por WhatsApp (`GET /reporte` con cabecera `X-Reporte-Token`; `?token=` sigue sirviendo) | `agentkit/reporte.py` |
 | **Mensajes procesados en la base**: un webhook reintentado por Meta/Twilio/Instagram no se responde dos veces, ni tras un reinicio (tabla `mensajes_procesados`, 7 días; si la base falla, se atiende igual) | `agentkit/memory.py` + `agentkit/main.py` |
 | **Estado del agente en JSON** para un panel externo (`GET /estado?token=...`) | `agentkit/main.py` + `agentkit/estado.py` |
-| **Modo borrador**: el admin aprueba/edita cada respuesta por WhatsApp antes de que salga (`ok N` / `no N` / `editar N texto`) | `agentkit/borrador.py` |
+| **Modo borrador**: una persona aprueba/edita cada respuesta antes de que salga, por WhatsApp (`ok N` / `no N` / `editar N texto`) y/o Telegram (botones; `BORRADOR_CANALES`, `TELEGRAM_APROBADORES`). Un pendiente por conversación, vence a las 23 h 45 min, ninguno se pierde en silencio (`docs/BORRADORES.md`) | `agentkit/borrador.py` + `agentkit/telegram_borradores.py` |
 | **Defensa contra inyección de instrucciones**: bloque de seguridad fijo al final de todo prompt, mensajes del cliente envueltos con id aleatorio por turno, herramienta `reportar_manipulacion` (aviso al equipo, 1/hora). NO se quita por agente. Antes de publicar un core o cambiar un prompt: `tests/ataques_prompt.py` desde la carpeta del agente. Lecciones y capas pendientes en `docs/SEGURIDAD.md` | `agentkit/brain.py` + `agentkit/herramientas.py` |
 | **Tope de gasto por agente** (`TOPE_USD_DIA` / `TOPE_USD_MES`): al 80 % del diario o pasado el mensual responde solo en texto; al 100 % del diario deriva cada conversación a un humano hasta la medianoche sin llamar a Claude, con aviso al equipo. Sin las variables no hay tope. Detalle en `docs/TOPE-GASTO.md` | `agentkit/tope.py` |
 | Chat de prueba local sin WhatsApp | `python -m agentkit.chat` |
@@ -409,7 +409,9 @@ DATABASE_URL=sqlite+aiosqlite:///./agentkit.db
 # HUMANIZAR=true                # burbujas cortas con pausas
 # PAUSA_MINUTOS=60              # cuánto se pausa el bot al derivar a humano
 # NOMBRE_HUMANO=un asesor       # cómo llama el bot a quien atiende al derivar ("el barbero")
-# MODO_BORRADOR=true            # el admin aprueba cada respuesta (ok N / no N / editar N texto)
+# MODO_BORRADOR=true            # el equipo aprueba cada respuesta (ok N / no N / editar N texto)
+# BORRADOR_CANALES=telegram     # por dónde llega el borrador: whatsapp (default) y/o telegram; ver docs/BORRADORES.md
+# TELEGRAM_APROBADORES=123,456  # ids de quienes aprueban en Telegram (con TELEGRAM_TOKEN y TELEGRAM_CHAT_ID)
 
 # Tope de gasto del agente (WhatsApp/Instagram; el chat web tiene su propio tope). Ver docs/TOPE-GASTO.md
 # TOPE_USD_DIA=2                # 80 %: solo texto + aviso; 100 %: deriva a humano hasta mañana (2 con Haiku, 3 con Sonnet)

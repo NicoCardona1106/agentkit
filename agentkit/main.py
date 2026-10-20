@@ -14,7 +14,8 @@ from dotenv import find_dotenv, load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import PlainTextResponse, Response
 
-from agentkit import borrador, brain, estado, humanizar, memory, reporte, tope, voz, web
+from agentkit import (borrador, brain, estado, humanizar, memory, notificar, reporte, telegram_borradores, tope,
+                      voz, web)
 from agentkit.privacidad import ocultar
 from agentkit.providers import MensajeEntrante, obtener_proveedor
 
@@ -62,7 +63,17 @@ async def lifespan(app: FastAPI):
     _iniciado = datetime.utcnow()
     _arranque_monotonic = time.monotonic()
     logger.info(f"AgentKit listo — proveedor: {proveedor.__class__.__name__}")
+    notificar.advertir_config()
+    tareas = []
+    if borrador.activo():
+        borrador.advertir_config()
+        tareas.append(asyncio.create_task(borrador.vigilar()))  # barre los borradores vencidos
+        if "telegram" in borrador.canales():
+            tareas.append(telegram_borradores.iniciar(proveedor))  # getUpdates saliente: sin puerto nuevo
     yield
+    for t in tareas:
+        t.cancel()
+    await asyncio.gather(*tareas, return_exceptions=True)
 
 
 from agentkit import __version__
@@ -183,9 +194,8 @@ async def procesar_mensaje(msg: MensajeEntrante):
 
         # MODO_BORRADOR: la respuesta espera aprobación del admin; el mensaje del
         # asistente se guarda al aprobarse, para que el historial refleje solo lo
-        # que el cliente realmente recibió.
-        # ponytail: si el cliente escribe de nuevo antes de la aprobación se genera
-        # otro borrador sin ver el anterior — aceptable en el mes de supervisión
+        # que el cliente realmente recibió. Si el cliente escribe de nuevo antes de la
+        # decisión, el borrador nuevo reemplaza al anterior (uno solo por conversación).
         if borrador.activo():
             await borrador.proponer(proveedor, msg.telefono, respuesta, texto)
             return

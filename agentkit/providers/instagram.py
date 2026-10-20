@@ -11,7 +11,7 @@ import httpx
 from fastapi import Request
 
 from agentkit.privacidad import host_permitido
-from agentkit.providers.base import MensajeEntrante, ProveedorWhatsApp
+from agentkit.providers.base import MensajeEntrante, ProveedorWhatsApp, resumen_error
 from agentkit.providers.meta import firma_meta_valida
 
 logger = logging.getLogger("agentkit")
@@ -78,7 +78,7 @@ class ProveedorInstagram(ProveedorWhatsApp):
         async with httpx.AsyncClient() as client:
             r = await client.post(url, json=payload, params={"access_token": self.access_token})
             if r.status_code != 200:
-                logger.error(f"Error Instagram API: {r.status_code} — {r.text}")
+                logger.error(f"Error Instagram API: {resumen_error(r)}")
             return r.status_code == 200
 
     async def descargar_audio(self, audio_ref: str) -> bytes | None:

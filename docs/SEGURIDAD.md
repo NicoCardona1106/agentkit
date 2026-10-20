@@ -34,7 +34,16 @@ no todos (aceptable; ver capa 5 abajo).
 - Chat web: orígenes permitidos (`WEB_CHAT_ORIGINS`), límite por IP/hora y por sesión, tope de
   gasto diario (`WEB_CHAT_TOPE_USD_DIA`).
 - Claves solo en `.env` (modo 600 en el VPS), nunca en git.
-- Modo borrador: el admin aprueba cada respuesta el primer mes.
+- Modo borrador: una persona aprueba cada respuesta el primer mes.
+- **v0.9.0 (F5a):** borradores por Telegram y canales múltiples (`docs/BORRADORES.md`). Decide solo un id de
+  `TELEGRAM_APROBADORES` dentro de `TELEGRAM_CHAT_ID` y sobre un mensaje que AgentKit registró (chat +
+  message_id → borrador); un solo envío aunque decidan dos canales a la vez (UPDATE atómico); `enviado` solo si
+  salieron todas las burbujas; vencido, reemplazado o ya resuelto se rechazan en la decisión; el texto del cliente
+  se muestra sin `parse_mode`; los logs no llevan contenido ni el token (solo `type(e).__name__`). Sin salida de
+  puertos nuevos: Telegram se consulta con `getUpdates`.
+  Falla cerrado (`MODO_BORRADOR=true` sin canal válido deja los borradores pendientes y sin aviso); los logs de
+  Meta e Instagram no llevan el cuerpo de la respuesta; el engine de la base oculta los parámetros SQL; en
+  Instagram el aviso del equipo no sale hacia `ADMIN_PHONE`; Telegram sin vista previa de enlaces.
 - Derivar a humano pausa el bot.
 - **v0.8.7:** tope de gasto por agente en WhatsApp/Instagram (`TOPE_USD_DIA`/`TOPE_USD_MES`,
   `docs/TOPE-GASTO.md`).

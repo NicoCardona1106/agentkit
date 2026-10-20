@@ -13,6 +13,8 @@ async def generar_reporte() -> str:
     lineas.append(f"Tickets abiertos hoy: {len(datos['tickets'])}")
     for t in datos["tickets"]:
         lineas.append(f"  🎫 #{t['id']} ({t['telefono']}) — {t['problema'][:80]}")
+    if datos["borradores_sin_aviso"]:  # ningún borrador se pierde en silencio
+        lineas.append(f"⚠️ Borradores sin aviso (no llegaron a ningún canal): {datos['borradores_sin_aviso']}")
     return "\n".join(lineas)
 
 

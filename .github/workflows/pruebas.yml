@@ -13,3 +13,5 @@ jobs:
           python-version: "3.11"
       - run: pip install -e . -c constraints.txt pytest
       - run: pytest -q tests/test_core.py
+      # Los self-checks asíncronos (_test_borrador, _test_estado…) solo corren así.
+      - run: python tests/test_core.py

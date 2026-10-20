@@ -11,8 +11,49 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# BD temporal para no tocar agentkit.db
-os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{tempfile.gettempdir()}/agentkit_test.db"
+# BD temporal propia de ESTA corrida (por pid): dos corridas a la vez no se pisan ni heredan datos viejas,
+# y se borra al terminar.
+_BD_PRUEBAS = os.path.join(tempfile.gettempdir(), f"agentkit_test_{os.getpid()}.db")
+os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{_BD_PRUEBAS}"
+
+
+def _borrar_bd_pruebas():
+    memoria = sys.modules.get("agentkit.memory")
+    if memoria:  # en Windows no se puede borrar un archivo con conexiones abiertas
+        try:
+            asyncio.run(memoria.engine.dispose())
+        except Exception:
+            pass
+    for sufijo in ("", "-journal", "-wal", "-shm"):
+        try:
+            os.remove(_BD_PRUEBAS + sufijo)
+        except OSError:
+            pass
+
+
+import atexit
+atexit.register(_borrar_bd_pruebas)
+
+try:
+    import pytest
+except ImportError:  # `python tests/test_core.py` sin pytest: las pruebas se encadenan como antes
+    pytest = None
+
+if pytest:
+    @pytest.fixture(autouse=True)
+    def _entorno_hermetico():
+        """Cada prueba corre sola: lo que cambie en el entorno no pasa a la siguiente, y las que importan
+        agentkit.main encuentran PROVIDER (se importa una vez; el valor no sale de la prueba)."""
+        from unittest import mock
+        with mock.patch.dict(os.environ):
+            os.environ.setdefault("PROVIDER", "meta")
+            yield
+
+    @pytest.fixture(scope="session", autouse=True)
+    def _base_lista():
+        """La BD de pruebas (propia de esta corrida) con sus tablas, para que ninguna dependa de otra."""
+        from agentkit import memory
+        asyncio.run(memory.inicializar_db())
 
 
 def test_humanizar():
@@ -384,7 +425,7 @@ async def _test_estado():
     data = r.json()
     claves = {"service", "version", "nombre", "proveedor", "modelo", "uptime_s", "iniciado",
               "modo_borrador", "ultimas_24h", "tickets_abiertos", "ultimo_mensaje",
-              "borradores_pendientes", "errores_24h"}
+              "borradores_pendientes", "borradores_sin_aviso", "errores_24h"}
     assert claves <= set(data.keys()), data.keys()
     assert data["service"] == "agentkit"
     assert isinstance(data["uptime_s"], float)
@@ -424,7 +465,7 @@ def test_precios_decimal():
     # Groq whisper-large-v3: USD 0.111/hora con mínimo facturado de 10 s
     assert precios.costo_audio("whisper-large-v3", Decimal(3)) == Decimal("0.111") / 60 * 10 / 60
 
-    ruta = os.path.join(tempfile.gettempdir(), "agentkit_precios_test.json")
+    ruta = os.path.join(tempfile.gettempdir(), f"agentkit_precios_test_{os.getpid()}.json")
     with open(ruta, "w", encoding="utf-8") as f:
         json.dump({"claude-haiku-4-5": {"salida": 4.5}, "modelo-nuevo": {"minuto": "0.01"}}, f)
     os.environ["PRECIOS_ARCHIVO"] = ruta
@@ -473,7 +514,7 @@ def test_precios_modelos_claude_y_json_malo():
     assert precios.costo_llm("claude-opus-5-5", M, 0, 0, M) == Decimal("9")  # 4 entrada + 5 escritura
     assert precios.tiene_precio("claude-haiku-4-5") and not precios.tiene_precio("modelo-raro")
 
-    ruta = os.path.join(tempfile.gettempdir(), "agentkit_precios_roto.json")
+    ruta = os.path.join(tempfile.gettempdir(), f"agentkit_precios_roto_{os.getpid()}.json")
     with open(ruta, "w", encoding="utf-8") as f:
         f.write("{esto no es json")
     os.environ["PRECIOS_ARCHIVO"] = ruta
@@ -1960,7 +2001,7 @@ def test_nivel_de_log_por_defecto():
     for valor, esperado in ((None, 20), ("DEBUG", 10), ("warning", 30), ("NO-EXISTE", 20)):
         env = {k: v for k, v in os.environ.items() if k != "LOG_LEVEL"}
         env.update(PROVIDER="meta", ENVIRONMENT="development",
-                   DATABASE_URL=f"sqlite+aiosqlite:///{tf.gettempdir()}/agentkit_nivel.db")
+                   DATABASE_URL=f"sqlite+aiosqlite:///{tf.gettempdir()}/agentkit_nivel_{os.getpid()}.db")
         if valor is not None:
             env["LOG_LEVEL"] = valor
         salida = subprocess.run([sys_mod.executable, "-c", codigo], cwd=raiz, env=env,
@@ -2254,6 +2295,1315 @@ def test_firma_sin_secreto_falla_cerrado():
                 os.environ[k] = v
 
 
+# ── F5a (v0.9.0): borradores por Telegram y canales múltiples ─────────────────────────────
+# Sin red: Telegram y los proveedores son falsos; el reloj se simula parchando borrador.ahora.
+# Cada prueba usa teléfonos nuevos (la BD temporal se reutiliza entre corridas).
+
+import contextlib
+
+_VARS_F5A = ("MODO_BORRADOR", "ADMIN_PHONE", "BORRADOR_CANALES", "TELEGRAM_TOKEN", "TELEGRAM_CHAT_ID",
+             "TELEGRAM_APROBADORES", "PROVIDER", "WHATSAPP_PROVIDER", "HUMANIZAR")
+_TOKEN_F5A = "123456:token-secreto-f5a"
+_ADMIN_F5A = "+573001112233"
+_upd_n = [0]
+
+
+@contextlib.contextmanager
+def _entorno_f5a(**extra):
+    """Entorno limpio de F5a (se restaura al salir). Un valor None quita la variable."""
+    from unittest import mock
+    base = {"MODO_BORRADOR": "true", "ADMIN_PHONE": _ADMIN_F5A, "BORRADOR_CANALES": "telegram,whatsapp",
+            "TELEGRAM_TOKEN": _TOKEN_F5A, "TELEGRAM_CHAT_ID": "-1001", "TELEGRAM_APROBADORES": "11,22",
+            "PROVIDER": "meta", "HUMANIZAR": "false"}
+    base.update(extra)
+    with mock.patch.dict(os.environ):
+        for v in _VARS_F5A:
+            os.environ.pop(v, None)
+        os.environ.update({k: v for k, v in base.items() if v is not None})
+        yield
+
+
+class _TelegramFalso:
+    """Reemplaza telegram_borradores._llamar: anota cada llamada y responde como la Bot API."""
+
+    def __init__(self, primer_id=None):
+        # Ids de mensaje al azar: la BD temporal conserva avisos de corridas anteriores en el mismo chat
+        import secrets
+        self.llamadas, self.fallar, self.updates = [], set(), []
+        self.siguiente = secrets.randbelow(10**6) + 100 if primer_id is None else primer_id
+
+    async def __call__(self, metodo, datos, espera=10, tolerar=()):
+        self.llamadas.append((metodo, datos))
+        if metodo in self.fallar:
+            return 500, None
+        if metodo == "sendMessage":
+            self.siguiente += 1
+            return 200, {"ok": True, "result": {"message_id": self.siguiente}}
+        if metodo == "getUpdates":
+            entregar, self.updates = self.updates, []
+            return 200, {"ok": True, "result": entregar}
+        return 200, {"ok": True, "result": True}
+
+    def de(self, metodo):
+        return [d for m, d in self.llamadas if m == metodo]
+
+    def textos(self):
+        return [d["text"] for m, d in self.llamadas if m in ("sendMessage", "editMessageText")]
+
+
+class _ProvF5a:
+    """Proveedor falso. `ok`: bool, o función (teléfono, nº de envío a ese teléfono) → bool."""
+
+    def __init__(self, ok=True):
+        self.enviados, self.ok, self._n = [], ok, {}
+
+    async def enviar_mensaje(self, tel, texto):
+        self.enviados.append((tel, texto))
+        self._n[tel] = self._n.get(tel, 0) + 1
+        return self.ok if isinstance(self.ok, bool) else self.ok(tel, self._n[tel])
+
+    def a(self, tel):
+        return [t for d, t in self.enviados if d == tel]
+
+
+@contextlib.contextmanager
+def _f5a(tg=None, ahora=None, **entorno):
+    """Entorno + Telegram falso (+ reloj simulado). Devuelve el Telegram falso."""
+    from unittest import mock
+    from agentkit import borrador, humanizar, telegram_borradores as t
+    t._ULTIMO_LOG.clear()
+    tg = tg or _TelegramFalso()
+    with _entorno_f5a(**entorno), mock.patch.object(t, "_llamar", tg), \
+            mock.patch.object(humanizar, "pausa_escritura", lambda texto: 0):
+        if ahora is None:
+            yield tg
+        else:
+            with mock.patch.object(borrador, "ahora", ahora):
+                yield tg
+
+
+@contextlib.contextmanager
+def _logs(nivel=None):
+    """Captura el logger «agentkit» (mensaje + traza) como lista de (nivel, texto)."""
+    import logging
+    registros, formato = [], logging.Formatter()
+    h = logging.Handler()
+    h.emit = lambda r: registros.append((r.levelname, formato.format(r)))
+    lg = logging.getLogger("agentkit")
+    previo = lg.level
+    lg.addHandler(h)
+    lg.setLevel(nivel or logging.INFO)
+    try:
+        yield registros
+    finally:
+        lg.removeHandler(h)
+        lg.setLevel(previo)
+
+
+def _tel():
+    import secrets
+    return f"57{secrets.randbelow(10**9):09d}"
+
+
+def _upd_cb(uid, chat, mid, data, **extra):
+    _upd_n[0] += 1
+    cq = {"id": "cq", "from": {"id": uid, "is_bot": False},
+          "message": {"message_id": mid, "chat": {"id": chat}}, "data": data}
+    cq.update(extra)
+    return {"update_id": _upd_n[0], "callback_query": cq}
+
+
+def _upd_resp(uid, chat, texto, reply_mid, mid=900, **extra):
+    _upd_n[0] += 1
+    m = {"message_id": mid, "from": {"id": uid, "is_bot": False}, "chat": {"id": chat}, "text": texto,
+         "reply_to_message": {"message_id": reply_mid}}
+    m.update(extra)
+    return {"update_id": _upd_n[0], "message": m}
+
+
+async def _filas_f5a(tel):
+    from sqlalchemy import select
+    from agentkit import memory
+    async with memory.async_session() as s:
+        q = select(memory.Borrador).where(memory.Borrador.telefono == tel).order_by(memory.Borrador.id)
+        return [memory._fila(b) for b in (await s.execute(q)).scalars().all()]
+
+
+async def _fila_f5a(tel, estado=None):
+    filas = [f for f in await _filas_f5a(tel) if estado is None or f["estado"] == estado]
+    return filas[-1] if filas else None
+
+
+async def _proponer_f5a(prov, tel=None, respuesta="Hola, ¿en qué te ayudo?", cliente="¿Qué precio tiene?"):
+    from agentkit import borrador
+    tel = tel or _tel()
+    await borrador.proponer(prov, tel, respuesta, cliente)
+    return await _fila_f5a(tel, "pendiente")
+
+
+async def _mensaje_cliente_f5a(tel, hora):
+    """Un mensaje del cliente con hora explícita (para simular el último mensaje)."""
+    from agentkit import memory
+    async with memory.async_session() as s:
+        s.add(memory.Mensaje(telefono=tel, role="user", content="hola", timestamp=hora))
+        await s.commit()
+
+
+async def _test_f5a_regresion_sin_canales():
+    """Sin BORRADOR_CANALES todo es como en v0.8.11: aviso por WhatsApp al ADMIN_PHONE, ok/no/editar,
+    ninguna llamada a Telegram aunque haya TELEGRAM_* (sirven a los avisos del equipo)."""
+    from unittest import mock
+    from agentkit import borrador, memory, telegram_borradores as t
+
+    await memory.inicializar_db()
+
+    async def prohibido(*a, **k):
+        raise AssertionError("sin BORRADOR_CANALES no se llama a Telegram")
+
+    with _entorno_f5a(BORRADOR_CANALES=None), mock.patch.object(t, "_llamar", prohibido):
+        assert borrador.activo() and borrador.canales() == ["whatsapp"]
+        prov, tel = _ProvF5a(), _tel()
+        await borrador.proponer(prov, tel, "Vale $10.000", "¿Cuánto vale?")
+        bid = (await _fila_f5a(tel))["id"]
+        assert prov.enviados == [(_ADMIN_F5A, (
+            f"📝 *Borrador #{bid}* para {tel}\n\nCliente: ¿Cuánto vale?\n\nRespuesta propuesta:\nVale $10.000\n\n"
+            f"Responde: *ok {bid}* envía · *no {bid}* descarta · *editar {bid} <texto>* envía tu versión"))]
+
+        await borrador.comando_admin(prov, f"ok {bid}")
+        assert prov.a(tel) == ["Vale $10.000"] and "enviado" in prov.enviados[-1][1]
+        fila = await _fila_f5a(tel)
+        assert fila["estado"] == "enviado" and fila["canal"] == "whatsapp" and fila["decidido_por"] == "admin"
+        assert (await memory.obtener_historial(tel))[-1] == {"role": "assistant", "content": "Vale $10.000"}
+
+        await borrador.comando_admin(prov, f"ok {bid}")  # ya resuelto: no se envía dos veces
+        assert prov.a(tel) == ["Vale $10.000"] and "ya fue resuelto" in prov.enviados[-1][1]
+
+        tel2 = _tel()
+        await borrador.proponer(prov, tel2, "Borrador", "hola")
+        bid2 = (await _fila_f5a(tel2))["id"]
+        await borrador.comando_admin(prov, f"editar {bid2} Versión del admin")
+        assert prov.a(tel2) == ["Versión del admin"]
+        tel3 = _tel()
+        await borrador.proponer(prov, tel3, "Borrador", "hola")
+        await borrador.comando_admin(prov, f"no {(await _fila_f5a(tel3))['id']}")
+        assert prov.a(tel3) == [] and (await _fila_f5a(tel3))["estado"] == "descartado"
+        await borrador.comando_admin(prov, "ok 999999999")
+        assert "no existe" in prov.enviados[-1][1]
+
+    # Sin ADMIN_PHONE ni canales el modo borrador FALLA CERRADO (RF-56): sigue activo, no envía nada, el
+    # borrador queda «sin aviso» y al arrancar hay un ERROR
+    with _entorno_f5a(BORRADOR_CANALES=None, ADMIN_PHONE=None), _logs() as logs:
+        assert borrador.activo() and borrador.canales() == []
+        borrador.advertir_config()
+        assert any(n == "ERROR" and "ningún canal" in m for n, m in logs)
+        prov, tel = _ProvF5a(), _tel()
+        await borrador.proponer(prov, tel, "Respuesta", "hola")
+        assert prov.enviados == [] and (await _fila_f5a(tel, "pendiente"))["sin_aviso"] == 1
+
+
+def test_f5a_regresion_sin_canales():
+    asyncio.run(_test_f5a_regresion_sin_canales())
+
+
+async def _test_f5a_autorizacion():
+    """Regla 1 / RF-54: decide solo un aprobador DENTRO del chat configurado. Lo demás: 0 envíos, sin
+    siquiera responder al botón, y un log sin contenido (máximo una línea por minuto por id)."""
+    from unittest import mock
+    from agentkit import memory, telegram_borradores as t
+
+    await memory.inicializar_db()
+    with _f5a() as tg, _logs() as logs:
+        prov = _ProvF5a()
+        b = await _proponer_f5a(prov, respuesta="SECRETO-BORRADOR", cliente="SECRETO-CLIENTE")
+        mid = b["tg_message_id"]
+        tg.llamadas.clear()
+        prov.enviados.clear()
+        reloj = [1000.0]
+        ajenos = [_upd_cb(999, -1001, mid, "aprobar"),         # usuario ajeno, chat correcto
+                  _upd_cb(11, -2002, mid, "aprobar"),          # aprobador, chat ajeno
+                  _upd_resp(999, -1001, "SECRETO-EDICION", mid),
+                  _upd_resp(11, -2002, "SECRETO-EDICION", mid)]
+        with mock.patch.object(t, "_reloj", lambda: reloj[0]):
+            for _ in range(3):
+                for u in ajenos:
+                    await t.manejar_update(prov, u)
+            assert tg.llamadas == [] and prov.enviados == []
+            assert (await _fila_f5a(b["telefono"]))["estado"] == "pendiente"
+            rechazos = [m for _, m in logs if "ignorada" in m]
+            assert len(rechazos) == 2, rechazos  # usuario 999 y chat -2002: una línea cada uno por minuto
+            assert not any("SECRETO" in m for _, m in logs)
+            assert any("usuario no autorizado" in m for m in rechazos)
+            reloj[0] += 61
+            await t.manejar_update(prov, ajenos[0])
+            assert len([m for _, m in logs if "ignorada" in m]) == 3  # pasó el minuto: se anota otra vez
+        # Control: el aprobador en su chat sí decide, y queda quién y por dónde
+        await t.manejar_update(prov, _upd_cb(11, -1001, mid, "aprobar"))
+        assert prov.a(b["telefono"]) == ["SECRETO-BORRADOR"]
+        fila = await _fila_f5a(b["telefono"])
+        assert fila["estado"] == "enviado" and fila["decidido_por"] == "telegram:11" and fila["canal"] == "telegram"
+
+
+def test_f5a_autorizacion():
+    asyncio.run(_test_f5a_autorizacion())
+
+
+async def _test_f5a_mapeo_por_chat_y_mensaje():
+    """Regla 2: el aviso guarda (chat, message_id); la decisión se mapea por ese par y el callback_data
+    solo lleva la acción. Un mensaje falso con botones no decide nada."""
+    from agentkit import memory, telegram_borradores as t
+
+    await memory.inicializar_db()
+    with _f5a() as tg:
+        prov = _ProvF5a()
+        a = await _proponer_f5a(prov, respuesta="Respuesta A")
+        b = await _proponer_f5a(prov, respuesta="Respuesta B")
+        assert a["tg_chat_id"] == -1001 and a["tg_message_id"] and b["tg_message_id"] != a["tg_message_id"]
+        botones = tg.de("sendMessage")[-1]["reply_markup"]["inline_keyboard"][0]
+        assert [x["callback_data"] for x in botones] == ["aprobar", "descartar"]  # sin ids ni números
+        assert await memory.borrador_por_mensaje_tg(-1001, a["tg_message_id"]) is not None
+        assert await memory.borrador_por_mensaje_tg(-2002, a["tg_message_id"]) is None  # otro chat
+
+        envios = len(prov.enviados)
+        await t.manejar_update(prov, _upd_cb(11, -1001, 424242, "aprobar"))   # mensaje falso con botones
+        await t.manejar_update(prov, _upd_cb(11, -1001, a["tg_message_id"], f"aprobar:{b['id']}"))  # acción inventada
+        await t.manejar_update(prov, _upd_cb(11, -1001, a["tg_message_id"], "enviar_version"))     # acción de otro rol
+        assert len(prov.enviados) == envios
+        assert (await _fila_f5a(a["telefono"]))["estado"] == "pendiente"
+        assert (await _fila_f5a(b["telefono"]))["estado"] == "pendiente"
+
+        # Aprobar el mensaje de A decide A y solo A
+        await t.manejar_update(prov, _upd_cb(11, -1001, a["tg_message_id"], "aprobar"))
+        assert prov.a(a["telefono"]) == ["Respuesta A"] and prov.a(b["telefono"]) == []
+        assert (await _fila_f5a(b["telefono"]))["estado"] == "pendiente"
+        # y el aviso de A quedó editado: resultado y sin botones
+        editado = [d for d in tg.de("editMessageText") if d["message_id"] == a["tg_message_id"]]
+        assert editado and "enviado" in editado[-1]["text"] and editado[-1]["reply_markup"] == {"inline_keyboard": []}
+
+
+def test_f5a_mapeo_por_chat_y_mensaje():
+    asyncio.run(_test_f5a_mapeo_por_chat_y_mensaje())
+
+
+async def _test_f5a_carrera_entre_canales():
+    """Regla 3 / RF-52: dos canales deciden a la vez y el cliente recibe UN solo mensaje."""
+    from agentkit import borrador, memory, telegram_borradores as t
+
+    await memory.inicializar_db()
+    with _f5a() as tg:
+        for _ in range(12):
+            prov = _ProvF5a()
+            b = await _proponer_f5a(prov, respuesta="Una sola vez")
+            avisos = len(prov.enviados)
+            await asyncio.gather(t.manejar_update(prov, _upd_cb(11, -1001, b["tg_message_id"], "aprobar")),
+                                 borrador.comando_admin(prov, f"ok {b['id']}"))
+            assert prov.a(b["telefono"]) == ["Una sola vez"], prov.enviados
+            respuestas_admin = [x for d, x in prov.enviados[avisos:] if d == _ADMIN_F5A]
+            assert len(respuestas_admin) <= 1 and all(
+                "enviado a" in x or "ya fue resuelto" in x for x in respuestas_admin)
+            assert (await _fila_f5a(b["telefono"]))["estado"] == "enviado"
+        # La misma carrera directo en la base: de 6 decisiones simultáneas pasa una
+        tel = _tel()
+        bid = (await _proponer_f5a(_ProvF5a(), tel))["id"]
+        r = await asyncio.gather(*(memory.resolver_borrador(bid, "enviando", decidido_por=f"x{i}") for i in range(6)))
+        assert len([x for x in r if x]) == 1
+
+
+def test_f5a_carrera_entre_canales():
+    asyncio.run(_test_f5a_carrera_entre_canales())
+
+
+async def _test_f5a_envio_enviando_y_fallo():
+    """Regla 4: «enviando» antes de enviar; «enviado» solo si TODAS las burbujas salieron; si no,
+    «fallo_envio» (ERROR, aviso «no se pudo enviar», nunca vuelve a pendiente, sin botón de reintento)."""
+    import logging
+    from agentkit import borrador, estado, memory, telegram_borradores as t
+
+    await memory.inicializar_db()
+    logging.getLogger("agentkit").addHandler(estado.contador_errores)  # como lo hace main.py
+    texto = ("Primer párrafo de la respuesta. " * 6) + "\n\n" + ("Segundo párrafo de la respuesta. " * 6)
+    with _f5a(HUMANIZAR="true") as tg, _logs() as logs:
+        # Éxito: el estado es «enviando» mientras salen las burbujas
+        vistos, tel = [], _tel()
+
+        class ProvVe(_ProvF5a):
+            async def enviar_mensaje(self, destino, t_):
+                if destino == tel:
+                    vistos.append((await _fila_f5a(tel))["estado"])
+                return await super().enviar_mensaje(destino, t_)
+
+        prov = ProvVe()
+        b = await _proponer_f5a(prov, tel, texto)
+        await t.manejar_update(prov, _upd_cb(11, -1001, b["tg_message_id"], "aprobar"))
+        assert vistos == ["enviando", "enviando"] and len(prov.a(tel)) == 2
+        assert (await _fila_f5a(tel))["estado"] == "enviado"
+        assert (await memory.obtener_historial(tel))[-1]["content"] == texto
+
+        # Falla la segunda burbuja: fallo_envio, ERROR, aviso y nada de reintento
+        tel2 = _tel()
+        prov2 = _ProvF5a(ok=lambda d, n: not (d == tel2 and n == 2))
+        b2 = await _proponer_f5a(prov2, tel2, texto)
+        antes = estado.contador_errores.contar_24h()
+        await t.manejar_update(prov2, _upd_cb(11, -1001, b2["tg_message_id"], "aprobar"))
+        fila = await _fila_f5a(tel2)
+        assert fila["estado"] == "fallo_envio"
+        assert estado.contador_errores.contar_24h() == antes + 1  # cuenta en errores_24h de /estado
+        assert any(n == "ERROR" and "fallo_envio" in m for n, m in logs)
+        editado = [d for d in tg.de("editMessageText") if d["message_id"] == b2["tg_message_id"]][-1]
+        assert "no se pudo enviar" in editado["text"] and editado["reply_markup"] == {"inline_keyboard": []}
+        assert not (await memory.obtener_historial(tel2))  # no se guarda lo que el cliente no recibió
+        envios = len(prov2.a(tel2))
+        await t.manejar_update(prov2, _upd_cb(11, -1001, b2["tg_message_id"], "aprobar"))  # botón viejo
+        await borrador.comando_admin(prov2, f"ok {b2['id']}")
+        assert len(prov2.a(tel2)) == envios and (await _fila_f5a(tel2))["estado"] == "fallo_envio"
+        assert "reintent" not in str(tg.llamadas).lower()
+
+        # Lo mismo por WhatsApp: el admin se entera
+        tel3 = _tel()
+        prov3 = _ProvF5a(ok=lambda d, n: d != tel3)
+        b3 = await _proponer_f5a(prov3, tel3, "Un solo mensaje")
+        await borrador.comando_admin(prov3, f"ok {b3['id']}")
+        assert "no se pudo enviar" in prov3.enviados[-1][1] and (await _fila_f5a(tel3))["estado"] == "fallo_envio"
+
+
+def test_f5a_envio_enviando_y_fallo():
+    asyncio.run(_test_f5a_envio_enviando_y_fallo())
+
+
+async def _test_f5a_editar_con_confirmacion():
+    """Regla 5 / RF-53: editar = responder al aviso; crea una versión y pide confirmar; sin confirmar no
+    se envía nada. Solo texto; vacío, > 4.096 (WhatsApp) o > 1.000 (Instagram) se rechaza con aviso."""
+    from agentkit import memory, telegram_borradores as t
+
+    await memory.inicializar_db()
+    with _f5a() as tg:
+        prov = _ProvF5a()
+        b = await _proponer_f5a(prov, respuesta="Texto original")
+        tel, mid = b["telefono"], b["tg_message_id"]
+
+        await t.manejar_update(prov, _upd_resp(22, -1001, "  Mi versión nueva  ", mid, mid=901))
+        fila = await _fila_f5a(tel)
+        assert prov.a(tel) == [] and fila["estado"] == "pendiente" and fila["version_texto"] == "Mi versión nueva"
+        confirmacion = tg.de("sendMessage")[-1]
+        assert [x["text"] for x in confirmacion["reply_markup"]["inline_keyboard"][0]] == [
+            "Enviar esta versión", "Cancelar"]
+        assert confirmacion["reply_to_message_id"] == 901
+        v1 = fila["version_msg_id"]
+        assert v1
+
+        # Otra versión reemplaza a la anterior: el botón de la vieja ya no hace nada
+        await t.manejar_update(prov, _upd_resp(22, -1001, "Versión dos", mid, mid=902))
+        v2 = (await _fila_f5a(tel))["version_msg_id"]
+        assert v2 != v1 and (await _fila_f5a(tel))["version_texto"] == "Versión dos"
+        await t.manejar_update(prov, _upd_cb(22, -1001, v1, "enviar_version"))
+        assert prov.a(tel) == []
+
+        # Confirmar envía EXACTAMENTE la versión y queda registrada
+        await t.manejar_update(prov, _upd_cb(22, -1001, v2, "enviar_version"))
+        assert prov.a(tel) == ["Versión dos"]
+        fila = await _fila_f5a(tel)
+        assert fila["estado"] == "enviado" and fila["texto"] == "Versión dos" and fila["decidido_por"] == "telegram:22"
+
+        # Cancelar: no se envía y el borrador sigue pendiente con sus botones
+        b2 = await _proponer_f5a(prov, respuesta="Original 2")
+        await t.manejar_update(prov, _upd_resp(11, -1001, "Otra versión", b2["tg_message_id"]))
+        conf = (await _fila_f5a(b2["telefono"]))["version_msg_id"]
+        await t.manejar_update(prov, _upd_cb(11, -1001, conf, "cancelar_version"))
+        f2 = await _fila_f5a(b2["telefono"])
+        assert prov.a(b2["telefono"]) == [] and f2["estado"] == "pendiente" and f2["version_texto"] is None
+        await t.manejar_update(prov, _upd_cb(11, -1001, conf, "enviar_version"))  # ya cancelada
+        assert prov.a(b2["telefono"]) == []
+        await t.manejar_update(prov, _upd_cb(11, -1001, b2["tg_message_id"], "aprobar"))
+        assert prov.a(b2["telefono"]) == ["Original 2"]
+
+        # Rechazos con aviso: vacío, demasiado largo, sin texto (medios) y respuesta a otro mensaje
+        b3 = await _proponer_f5a(prov, respuesta="Original 3")
+        for texto, esperado in (("   ", "vacía"), ("x" * 4097, "4096")):
+            antes = len(tg.de("sendMessage"))
+            await t.manejar_update(prov, _upd_resp(11, -1001, texto, b3["tg_message_id"]))
+            assert len(tg.de("sendMessage")) == antes + 1 and esperado in tg.de("sendMessage")[-1]["text"]
+        await t.manejar_update(prov, _upd_resp(11, -1001, "x" * 4096, b3["tg_message_id"]))  # justo el límite
+        assert (await _fila_f5a(b3["telefono"]))["version_texto"] == "x" * 4096
+        antes = len(tg.llamadas)
+        await t.manejar_update(prov, _upd_resp(11, -1001, None, b3["tg_message_id"], photo=[{"file_id": "f"}]))
+        await t.manejar_update(prov, _upd_resp(11, -1001, "texto", 31337))  # responde a un mensaje no registrado
+        assert len(tg.llamadas) == antes and prov.a(b3["telefono"]) == []
+
+    # Instagram: el límite baja a 1.000 caracteres
+    with _f5a(PROVIDER="instagram", BORRADOR_CANALES="telegram") as tg:
+        prov = _ProvF5a()
+        b = await _proponer_f5a(prov, respuesta="Original IG")
+        await t.manejar_update(prov, _upd_resp(11, -1001, "y" * 1001, b["tg_message_id"]))
+        assert (await _fila_f5a(b["telefono"]))["version_texto"] is None and "1000" in tg.de("sendMessage")[-1]["text"]
+        await t.manejar_update(prov, _upd_resp(11, -1001, "y" * 1000, b["tg_message_id"]))
+        assert (await _fila_f5a(b["telefono"]))["version_texto"] == "y" * 1000
+
+
+def test_f5a_editar_con_confirmacion():
+    asyncio.run(_test_f5a_editar_con_confirmacion())
+
+
+async def _test_f5a_updates_ignorados():
+    """Regla 6: solo `message` y `callback_query`; editados, medios, bots, canales y callbacks sin mensaje
+    no hacen nada. getUpdates pide solo esos dos tipos."""
+    from agentkit import memory, telegram_borradores as t
+
+    await memory.inicializar_db()
+    with _f5a() as tg:
+        prov = _ProvF5a()
+        b = await _proponer_f5a(prov)
+        mid = b["tg_message_id"]
+        tg.llamadas.clear()
+        prov.enviados.clear()
+        editado = _upd_resp(11, -1001, "texto editado", mid)
+        editado["edited_message"] = editado.pop("message")
+        bot = _upd_resp(11, -1001, "de un bot", mid)
+        bot["message"]["from"]["is_bot"] = True
+        canal = _upd_resp(11, -1001, "de un canal", mid, sender_chat={"id": -77})
+        sin_mensaje = _upd_cb(11, -1001, mid, "aprobar")
+        del sin_mensaje["callback_query"]["message"]
+        cb_bot = _upd_cb(11, -1001, mid, "aprobar")
+        cb_bot["callback_query"]["from"]["is_bot"] = True
+        otros = [editado, bot, canal, sin_mensaje, cb_bot,
+                 {"update_id": 9, "channel_post": {"message_id": mid, "chat": {"id": -1001}, "text": "x"}},
+                 {"update_id": 10, "inline_query": {"id": "q", "from": {"id": 11}, "query": "x"}},
+                 _upd_resp(11, -1001, None, mid, photo=[{"file_id": "f"}], caption="foto"), "no es un dict", None]
+        for u in otros:
+            await t.manejar_update(prov, u)
+        assert tg.llamadas == [] and prov.enviados == []
+        fila = await _fila_f5a(b["telefono"])
+        assert fila["estado"] == "pendiente" and fila["version_texto"] is None
+
+        # El sondeo: pide solo message/callback_query, avanza el offset y procesa lo que llega
+        tg.updates = [{"update_id": 500, "edited_message": {"text": "x"}},
+                      _upd_cb(11, -1001, mid, "aprobar") | {"update_id": 501}]
+        est = {"offset": None, "conflictos": 0}
+        assert await t._una_vuelta(prov, est) == 0.0
+        pedido = tg.de("getUpdates")[0]
+        assert pedido["allowed_updates"] == ["message", "callback_query"] and "offset" not in pedido
+        assert est["offset"] == 502 and prov.a(b["telefono"]) == [b["texto"]]
+        await t._una_vuelta(prov, est)
+        assert tg.de("getUpdates")[1]["offset"] == 502
+
+
+def test_f5a_updates_ignorados():
+    asyncio.run(_test_f5a_updates_ignorados())
+
+
+async def _test_f5a_vencimiento_y_estados():
+    """Regla 7 / RF-57: 23 h 45 min desde el ÚLTIMO mensaje del cliente. Vencido, reemplazado o ya
+    resuelto se rechazan EN la decisión, aunque el barrido no haya corrido (reloj simulado)."""
+    from datetime import datetime, timedelta
+    from agentkit import borrador, memory, telegram_borradores as t
+
+    await memory.inicializar_db()
+    T0 = datetime(2030, 5, 1, 12, 0, 0)
+    reloj = [T0]
+    with _f5a(ahora=lambda: reloj[0]) as tg:
+        async def borrador_vigente(prov, respuesta="Texto"):
+            tel = _tel()
+            await _mensaje_cliente_f5a(tel, T0 - timedelta(hours=5))  # un mensaje viejo...
+            await _mensaje_cliente_f5a(tel, T0)                       # ...y el último, que manda
+            reloj[0] = T0 + timedelta(minutes=3)  # el borrador sale 3 min después: el plazo cuenta desde T0
+            return await _proponer_f5a(prov, tel, respuesta)
+
+        prov = _ProvF5a()
+        reloj[0] = T0
+        a = await borrador_vigente(prov)
+        assert a["vence"] == T0 + timedelta(hours=23, minutes=45)
+        b = await borrador_vigente(prov)
+        c = await borrador_vigente(prov)
+        d = await borrador_vigente(prov)
+        f = await borrador_vigente(prov)  # nadie lo toca: lo vence el barrido
+
+        reloj[0] = T0 + timedelta(hours=23, minutes=44)
+        await t.manejar_update(prov, _upd_cb(11, -1001, a["tg_message_id"], "aprobar"))
+        assert prov.a(a["telefono"]) == [a["texto"]]  # a las 23:44 todavía se puede
+
+        reloj[0] = T0 + timedelta(hours=23, minutes=46)
+        assert (await _fila_f5a(b["telefono"]))["estado"] == "pendiente"  # el barrido no ha corrido
+        await t.manejar_update(prov, _upd_cb(11, -1001, b["tg_message_id"], "aprobar"))
+        assert prov.a(b["telefono"]) == []
+        assert (await _fila_f5a(b["telefono"]))["estado"] == "vencido"
+        assert "venció" in borrador.texto_resultado(b["id"], "vencido")
+        editado = [x for x in tg.de("editMessageText") if x["message_id"] == b["tg_message_id"]][-1]
+        assert "vencido" in editado["text"] and editado["reply_markup"] == {"inline_keyboard": []}
+        await borrador.comando_admin(prov, f"ok {c['id']}")  # por WhatsApp pasa lo mismo
+        assert prov.a(c["telefono"]) == [] and "venció" in prov.enviados[-1][1]
+        # editar un vencido tampoco se puede
+        await t.manejar_update(prov, _upd_resp(11, -1001, "tarde", d["tg_message_id"]))
+        assert (await _fila_f5a(d["telefono"]))["version_texto"] is None and prov.a(d["telefono"]) == []
+
+        # El barrido deja el resto en «vencido» y lo muestra en Telegram
+        reloj[0] = T0 + timedelta(hours=24)
+        assert (await _fila_f5a(f["telefono"]))["estado"] == "pendiente"
+        assert await borrador.barrer_vencidos() >= 1
+        assert (await _fila_f5a(f["telefono"]))["estado"] == "vencido"
+        editado = [x for x in tg.de("editMessageText") if x["message_id"] == f["tg_message_id"]][-1]
+        assert "vencido" in editado["text"]
+
+        # Reemplazado y ya resuelto
+        reloj[0] = T0
+        e = await borrador_vigente(prov, "Primero")
+        await _mensaje_cliente_f5a(e["telefono"], T0)
+        await borrador.proponer(prov, e["telefono"], "Segundo", "otra pregunta")
+        nuevo = await _fila_f5a(e["telefono"], "pendiente")
+        await t.manejar_update(prov, _upd_cb(11, -1001, e["tg_message_id"], "aprobar"))   # el viejo
+        assert prov.a(e["telefono"]) == []
+        editado = [x for x in tg.de("editMessageText") if x["message_id"] == e["tg_message_id"]][-1]
+        assert "reemplazado" in editado["text"]
+        await t.manejar_update(prov, _upd_cb(11, -1001, nuevo["tg_message_id"], "aprobar"))
+        await borrador.comando_admin(prov, f"ok {nuevo['id']}")
+        assert prov.a(e["telefono"]) == ["Segundo"]  # ya resuelto: no sale otra vez
+
+
+def test_f5a_vencimiento_y_estados():
+    asyncio.run(_test_f5a_vencimiento_y_estados())
+
+
+async def _test_f5a_un_solo_pendiente():
+    """Regla 8 / RF-58: un solo pendiente por conversación (índice único parcial); el nuevo reemplaza
+    al viejo, el aviso junta los mensajes y el mensaje viejo de Telegram queda «reemplazado»."""
+    from sqlalchemy.exc import IntegrityError
+    from agentkit import memory
+
+    await memory.inicializar_db()
+    with _f5a() as tg:
+        prov, tel = _ProvF5a(), _tel()
+        primero = await _proponer_f5a(prov, tel, "Borrador uno", "pregunta uno")
+        await _proponer_f5a(prov, tel, "Borrador dos", "pregunta dos")
+        filas = await _filas_f5a(tel)
+        assert [f["estado"] for f in filas] == ["reemplazado", "pendiente"]
+        assert filas[0]["reemplazado_por"] == filas[1]["id"]
+        aviso = tg.de("sendMessage")[-1]["text"]
+        assert "pregunta uno" in aviso and "pregunta dos" in aviso and "Borrador dos" in aviso
+        viejo = [d for d in tg.de("editMessageText") if d["message_id"] == primero["tg_message_id"]][-1]
+        assert "reemplazado" in viejo["text"] and viejo["reply_markup"] == {"inline_keyboard": []}
+        assert "pregunta uno" in prov.enviados[-1][1] and "pregunta dos" in prov.enviados[-1][1]  # y en WhatsApp
+
+        # El índice lo garantiza aunque el código se equivoque
+        async with memory.async_session() as s:
+            s.add(memory.Borrador(telefono=tel, texto="intruso", estado="pendiente"))
+            try:
+                await s.commit()
+                raise AssertionError("dos pendientes de la misma conversación")
+            except IntegrityError:
+                pass
+
+        # Dos proponer concurrentes: uno queda reemplazado, el otro pendiente
+        for _ in range(5):
+            tel2 = _tel()
+            await asyncio.gather(_proponer_f5a(prov, tel2, "A", "m1"), _proponer_f5a(prov, tel2, "B", "m2"))
+            filas = await _filas_f5a(tel2)
+            assert sorted(f["estado"] for f in filas) == ["pendiente", "reemplazado"], filas
+            perdedor = [f for f in filas if f["estado"] == "reemplazado"][0]
+            if perdedor["tg_message_id"]:
+                editados = [d["message_id"] for d in tg.de("editMessageText")]
+                assert perdedor["tg_message_id"] in editados  # su mensaje de Telegram ya no tiene botones
+
+
+def test_f5a_un_solo_pendiente():
+    asyncio.run(_test_f5a_un_solo_pendiente())
+
+
+async def _test_f5a_canal_telegram_sin_config():
+    """Regla 9: sin aprobadores o sin chat el canal telegram no existe (advertencia al arrancar) y una
+    lista vacía no autoriza a nadie."""
+    from agentkit import borrador, memory, telegram_borradores as t
+
+    await memory.inicializar_db()
+    for faltante in ({"TELEGRAM_APROBADORES": None}, {"TELEGRAM_APROBADORES": ""},
+                     {"TELEGRAM_APROBADORES": "abc, ,x"}, {"TELEGRAM_CHAT_ID": None},
+                     {"TELEGRAM_CHAT_ID": "@canal"}, {"TELEGRAM_TOKEN": None}):
+        with _f5a(BORRADOR_CANALES="telegram", **faltante) as tg, _logs() as logs:
+            assert borrador.canales() == [] and not t.configurado()
+            borrador.advertir_config()
+            assert any(n == "WARNING" and "telegram" in m for n, m in logs), (faltante, logs)
+            prov = _ProvF5a()
+            tel = _tel()
+            await borrador.proponer(prov, tel, "Texto", "hola")
+            assert tg.llamadas == [] and prov.enviados == []  # no hay canal: nada sale, nada se pierde
+            assert (await _fila_f5a(tel, "pendiente"))["sin_aviso"] == 1
+
+    # Un aviso ya registrado no lo decide nadie si la lista queda vacía
+    with _f5a() as tg:
+        prov = _ProvF5a()
+        b = await _proponer_f5a(prov)
+        os.environ["TELEGRAM_APROBADORES"] = ""
+        await t.manejar_update(prov, _upd_cb(11, -1001, b["tg_message_id"], "aprobar"))
+        await t.manejar_update(prov, _upd_cb(0, -1001, b["tg_message_id"], "aprobar"))
+        assert prov.a(b["telefono"]) == [] and (await _fila_f5a(b["telefono"]))["estado"] == "pendiente"
+
+
+def test_f5a_canal_telegram_sin_config():
+    asyncio.run(_test_f5a_canal_telegram_sin_config())
+
+
+async def _test_f5a_instagram():
+    """Regla 10 / RF-56: con PROVIDER=instagram ADMIN_PHONE no es aprobador, `whatsapp` no es un canal
+    válido y no sale ninguna llamada hacia ADMIN_PHONE; `telegram` sí funciona."""
+    from agentkit import borrador, memory, telegram_borradores as t
+
+    await memory.inicializar_db()
+    for pedido in (None, "whatsapp"):
+        with _f5a(PROVIDER="instagram", BORRADOR_CANALES=pedido) as tg, _logs() as logs:
+            assert borrador.activo() and not borrador.es_admin(_ADMIN_F5A) and borrador.canales() == []
+            borrador.advertir_config()
+            assert any("instagram" in m.lower() for _, m in logs if "whatsapp" in m or pedido is None)
+            prov, tel = _ProvF5a(), _tel()
+            base = (await memory.resumen_estado())["borradores_sin_aviso"]
+            await borrador.proponer(prov, tel, "Texto", "hola")
+            assert prov.enviados == [] and tg.llamadas == []  # 0 llamadas a Graph hacia el teléfono del admin
+            assert (await memory.resumen_estado())["borradores_sin_aviso"] == base + 1
+            assert any(n == "ERROR" for n, _ in logs)
+
+    with _f5a(PROVIDER="instagram", BORRADOR_CANALES="telegram") as tg:
+        assert borrador.canales() == ["telegram"]
+        prov, igsid = _ProvF5a(), "17841400000000099"
+        b = await _proponer_f5a(prov, igsid, "Hola desde IG")
+        assert prov.enviados == [] and b["tg_message_id"]
+        await t.manejar_update(prov, _upd_cb(11, -1001, b["tg_message_id"], "aprobar"))
+        assert prov.enviados == [(igsid, "Hola desde IG")]  # solo al cliente, nunca al ADMIN_PHONE
+
+
+def test_f5a_instagram():
+    asyncio.run(_test_f5a_instagram())
+
+
+async def _test_f5a_logs_sin_datos():
+    """Regla 11: ningún log lleva el texto del cliente ni del borrador, cuerpos de Telegram, str(e) de
+    httpx (con el token en la URL) ni el teléfono completo."""
+    from unittest import mock
+    import httpx
+    from agentkit import memory, telegram_borradores as t
+
+    await memory.inicializar_db()
+    secretos = ["SECRETO-CLIENTE", "SECRETO-BORRADOR", "SECRETO-VERSION", "SECRETO-CUERPO", _TOKEN_F5A]
+    telefonos = []
+
+    class Resp:
+        def __init__(self, status):
+            self.status_code = status
+        def json(self):
+            return {"ok": False, "description": "SECRETO-CUERPO"}
+
+    modo = {"fallo": "red"}
+
+    class ClienteRoto:
+        def __init__(self, *a, **k): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def post(self, url, json=None):
+            if modo["fallo"] == "red":
+                raise httpx.ConnectError(f"no hay red hacia {url} con SECRETO-CLIENTE")
+            return Resp(500)
+
+    with _logs() as logs:
+        # Telegram real (su cliente httpx falso) fallando de dos maneras
+        for fallo in ("red", "http"):
+            modo["fallo"] = fallo
+            with _entorno_f5a(), mock.patch.object(t.httpx, "AsyncClient", ClienteRoto):
+                prov, tel = _ProvF5a(), _tel()
+                telefonos.append(tel)
+                await _proponer_f5a(prov, tel, "SECRETO-BORRADOR", "SECRETO-CLIENTE")
+        # Flujo completo con Telegram falso: aviso, rechazo, edición, envío, fallo, vencimiento
+        with _f5a() as tg:
+            prov = _ProvF5a(ok=lambda d, n: d == _ADMIN_F5A)
+            b = await _proponer_f5a(prov, None, "SECRETO-BORRADOR", "SECRETO-CLIENTE")
+            await t.manejar_update(prov, _upd_cb(999, -1001, b["tg_message_id"], "aprobar"))
+            await t.manejar_update(prov, _upd_resp(11, -1001, "SECRETO-VERSION", b["tg_message_id"]))
+            await t.manejar_update(prov, _upd_cb(11, -1001, (await _fila_f5a(b["telefono"]))["version_msg_id"],
+                                                 "enviar_version"))   # el envío falla: fallo_envio
+            telefonos.append(b["telefono"])
+        assert any(n == "WARNING" for n, _ in logs) and any(n == "ERROR" for n, _ in logs)
+        texto_logs = "\n".join(m for _, m in logs)
+        for secreto in secretos + telefonos:
+            assert secreto not in texto_logs, secreto
+
+
+def test_f5a_logs_sin_datos():
+    asyncio.run(_test_f5a_logs_sin_datos())
+
+
+async def _test_f5a_dos_agentes():
+    """Regla 12 / RNF-21: dos agentes (bots, chats y aprobadores distintos, con los mismos números de
+    mensaje): un aprobador de A sobre un mensaje de B no hace nada, y ningún texto nombra a un negocio."""
+    from agentkit import memory, telegram_borradores as t
+
+    await memory.inicializar_db()
+    primero = _TelegramFalso().siguiente
+    tg_a, tg_b = _TelegramFalso(primero), _TelegramFalso(primero)  # mismos message_id en ambos chats
+    agente_a = {"TELEGRAM_TOKEN": "111:aaa", "TELEGRAM_CHAT_ID": "-1001", "TELEGRAM_APROBADORES": "11"}
+    agente_b = {"TELEGRAM_TOKEN": "222:bbb", "TELEGRAM_CHAT_ID": "-2002", "TELEGRAM_APROBADORES": "22"}
+    prov_a, prov_b = _ProvF5a(), _ProvF5a()
+    with _f5a(tg_a, **agente_a):
+        a = await _proponer_f5a(prov_a, respuesta="Respuesta de A")
+    with _f5a(tg_b, **agente_b):
+        b = await _proponer_f5a(prov_b, respuesta="Respuesta de B")
+    assert a["tg_message_id"] == b["tg_message_id"] and a["tg_chat_id"] != b["tg_chat_id"]
+    mid = a["tg_message_id"]
+
+    with _f5a(tg_a, **agente_a):   # un aprobador de B sobre el mensaje de A, y uno de A en el chat de B
+        await t.manejar_update(prov_a, _upd_cb(22, -2002, mid, "aprobar"))
+        await t.manejar_update(prov_a, _upd_cb(22, -1001, mid, "aprobar"))
+        await t.manejar_update(prov_a, _upd_cb(11, -2002, mid, "aprobar"))
+    with _f5a(tg_b, **agente_b):
+        await t.manejar_update(prov_b, _upd_cb(11, -1001, mid, "aprobar"))
+        await t.manejar_update(prov_b, _upd_cb(11, -2002, mid, "aprobar"))
+        await t.manejar_update(prov_b, _upd_resp(11, -2002, "intruso", mid))
+    assert prov_a.a(a["telefono"]) == [] and prov_b.a(b["telefono"]) == []
+    assert (await _fila_f5a(a["telefono"]))["estado"] == "pendiente"
+    assert (await _fila_f5a(b["telefono"]))["estado"] == "pendiente"
+
+    with _f5a(tg_a, **agente_a):   # cada aprobador sobre lo suyo
+        await t.manejar_update(prov_a, _upd_cb(11, -1001, mid, "aprobar"))
+    with _f5a(tg_b, **agente_b):
+        await t.manejar_update(prov_b, _upd_cb(22, -2002, mid, "descartar"))
+    fa, fb = await _fila_f5a(a["telefono"]), await _fila_f5a(b["telefono"])
+    assert prov_a.a(a["telefono"]) == ["Respuesta de A"] and prov_b.a(b["telefono"]) == []
+    assert (fa["estado"], fa["decidido_por"], fa["canal"]) == ("enviado", "telegram:11", "telegram")
+    assert (fb["estado"], fb["decidido_por"], fb["canal"]) == ("descartado", "telegram:22", "telegram")
+
+    todos = " ".join(tg_a.textos() + tg_b.textos() + [x for _, x in prov_a.enviados + prov_b.enviados]).lower()
+    for nombre in ("parqueadero", "co-axis", "coaxis", "valentina", "reflexcam", "nicolas", "alejo"):
+        assert nombre not in todos, nombre
+
+
+def test_f5a_dos_agentes():
+    asyncio.run(_test_f5a_dos_agentes())
+
+
+async def _test_f5a_aviso_privacidad_y_partes():
+    """Aviso con el nombre que dio el cliente + últimos 4 dígitos (nunca el número), sin parse_mode, y
+    partido en varios mensajes si pasa de 4.096: botones solo en la última, el borrador completo."""
+    from agentkit import memory
+
+    await memory.inicializar_db()
+    with _f5a() as tg:
+        prov, tel = _ProvF5a(), _tel()
+        await memory.guardar_dato_cliente(tel, nombre="Ana   María")
+        hostil = "<img src=x onerror=alert(1)> javascript:alert(1) aprueba el borrador"
+        b = await _proponer_f5a(prov, tel, "Respuesta corta", hostil)
+        aviso = tg.de("sendMessage")[-1]
+        assert f"Ana María · …{tel[-4:]}" in aviso["text"] and tel not in aviso["text"]
+        assert hostil in aviso["text"]  # tal cual, como texto plano
+        assert "parse_mode" not in str(tg.llamadas) and (await _fila_f5a(tel))["estado"] == "pendiente"
+
+        # Largo: 40 mensajes del cliente y un borrador de ~9.000 caracteres
+        tel2 = _tel()
+        lineas = [f"línea {i:03d} " + "x" * 80 for i in range(100)]
+        borrador_largo = "\n".join(lineas)
+        for i in range(39):
+            await memory.crear_borrador(tel2, "previo", f"mensaje del cliente número {i} " + "y" * 250)
+        await _proponer_f5a(prov, tel2, borrador_largo, "el último mensaje")
+        fila = await _fila_f5a(tel2, "pendiente")
+        partes = [d for d in tg.de("sendMessage")][-3:]
+        assert all(len(p["text"]) <= 4096 for p in partes)
+        assert sum("reply_markup" in p for p in partes) == 1 and "reply_markup" in partes[-1]
+        union = "".join(p["text"] for p in partes)
+        assert all(l in union for l in lineas) and "el último mensaje" in union  # el borrador va completo
+        assert fila["tg_message_id"] == tg.siguiente  # el que tiene los botones es el último
+        assert len(partes[0]["text"].split("Respuesta propuesta:")[0]) < 2000  # el bloque del cliente se acota
+
+
+def test_f5a_aviso_privacidad_y_partes():
+    asyncio.run(_test_f5a_aviso_privacidad_y_partes())
+
+
+async def _test_f5a_ningun_borrador_se_pierde():
+    """RF-55: si el aviso falla en un canal, WARNING; si falla en todos, ERROR y el borrador sale como
+    «sin aviso» en /estado y en el reporte; el cliente no recibe nada sin aprobación."""
+    from agentkit import memory, reporte
+
+    await memory.inicializar_db()
+    # Solo whatsapp y la ventana del admin cerrada
+    with _f5a(BORRADOR_CANALES="whatsapp") as tg, _logs() as logs:
+        base = (await memory.resumen_estado())["borradores_sin_aviso"]
+        prov, tel = _ProvF5a(ok=False), _tel()
+        await _proponer_f5a(prov, tel, "Texto", "hola")
+        assert any(n == "ERROR" and "ningún canal" in m for n, m in logs)
+        assert (await _fila_f5a(tel, "pendiente"))["sin_aviso"] == 1 and prov.a(tel) == []
+        assert (await memory.resumen_estado())["borradores_sin_aviso"] == base + 1
+        assert "sin aviso" in await reporte.generar_reporte()
+    # Falla Telegram pero llega WhatsApp: WARNING, no ERROR, y no es «sin aviso»
+    with _f5a() as tg, _logs() as logs:
+        tg.fallar = {"sendMessage"}
+        prov, tel = _ProvF5a(), _tel()
+        await _proponer_f5a(prov, tel, "Texto", "hola")
+        assert any(n == "WARNING" and "telegram" in m for n, m in logs) and not any(n == "ERROR" for n, _ in logs)
+        assert (await _fila_f5a(tel, "pendiente"))["sin_aviso"] == 0
+    # Fallan los dos
+    with _f5a() as tg, _logs() as logs:
+        tg.fallar = {"sendMessage"}
+        prov, tel = _ProvF5a(ok=False), _tel()
+        await _proponer_f5a(prov, tel, "Texto", "hola")
+        assert any(n == "ERROR" for n, _ in logs) and (await _fila_f5a(tel, "pendiente"))["sin_aviso"] == 1
+
+
+def test_f5a_ningun_borrador_se_pierde():
+    asyncio.run(_test_f5a_ningun_borrador_se_pierde())
+
+
+async def _test_f5a_conflicto_409():
+    """Un getUpdates con 409 repetido (otro proceso con el mismo bot) deja un ERROR visible en /estado."""
+    import logging
+    from agentkit import estado, telegram_borradores as t
+
+    logging.getLogger("agentkit").addHandler(estado.contador_errores)
+
+    class Telegram409(_TelegramFalso):
+        async def __call__(self, metodo, datos, espera=10, tolerar=()):
+            self.llamadas.append((metodo, datos))
+            return 409, {"ok": False}
+
+    with _f5a(Telegram409()) as tg, _logs() as logs:
+        est = {"offset": None, "conflictos": 0}
+        antes = estado.contador_errores.contar_24h()
+        for _ in range(2):
+            assert await t._una_vuelta(_ProvF5a(), est) == 5.0
+        assert not any(n == "ERROR" for n, _ in logs)  # con uno o dos no se alarma
+        await t._una_vuelta(_ProvF5a(), est)
+        assert [n for n, _ in logs].count("ERROR") == 1 and "409" in logs[-1][1]
+        assert estado.contador_errores.contar_24h() == antes + 1
+
+
+def test_f5a_conflicto_409():
+    asyncio.run(_test_f5a_conflicto_409())
+
+
+async def _test_f5a_migracion_borradores():
+    """Una base de v0.8.11 migra sin perder nada: columnas nuevas nulas, índice creado una vez (los
+    pendientes repetidos quedan en uno, con resuelto_en), un pendiente viejo vence a creado + 23 h 45 min
+    y se sigue decidiendo por WhatsApp mientras vigente."""
+    import tempfile
+    from datetime import datetime, timedelta
+    from unittest import mock
+    from sqlalchemy import inspect as sa_inspect
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+    from agentkit import borrador, memory
+
+    ruta = os.path.join(tempfile.gettempdir(), f"agentkit_migracion_borradores_{os.urandom(4).hex()}.db")
+    motor = create_async_engine(f"sqlite+aiosqlite:///{ruta}")
+    try:
+        async with motor.begin() as conn:
+            await conn.exec_driver_sql(
+                "CREATE TABLE borradores (id INTEGER PRIMARY KEY AUTOINCREMENT, telefono VARCHAR(50), "
+                "texto TEXT, estado VARCHAR(20), creado DATETIME)")
+            hace_1h = datetime.utcnow() - timedelta(hours=1)
+            hace_3d = datetime.utcnow() - timedelta(days=3)
+            for tel, texto, creado in (("573001", "viejo uno", hace_1h), ("573001", "viejo dos", hace_1h),
+                                       ("573002", "otro cliente", hace_1h), ("573009", "muy viejo", hace_3d)):
+                await conn.exec_driver_sql(
+                    "INSERT INTO borradores (telefono, texto, estado, creado) VALUES (?, ?, 'pendiente', ?)",
+                    (tel, texto, creado.strftime("%Y-%m-%d %H:%M:%S.%f")))
+            await conn.run_sync(memory.Base.metadata.create_all)
+            await memory._migrar_columnas_nuevas(conn)
+            await memory._migrar_columnas_nuevas(conn)  # idempotente
+
+            def inspeccionar(c):
+                i = sa_inspect(c)
+                return ({x["name"] for x in i.get_columns("borradores")},
+                        {x["name"]: x for x in i.get_indexes("borradores")})
+            columnas, indices = await conn.run_sync(inspeccionar)
+        assert {"vence", "tg_chat_id", "tg_message_id", "version_texto", "version_msg_id", "sin_aviso",
+                "decidido_por", "canal", "resuelto_en", "reemplazado_por", "mensajes_cliente"} <= columnas
+        assert indices["ux_borradores_pendiente"]["unique"]
+
+        sesion = async_sessionmaker(motor, class_=AsyncSession, expire_on_commit=False)
+        with _entorno_f5a(BORRADOR_CANALES=None), mock.patch.object(memory, "async_session", sesion):
+            pendientes = {p["telefono"]: p for p in await memory.borradores_pendientes()}
+            assert set(pendientes) == {"573001", "573002", "573009"} and pendientes["573001"]["texto"] == "viejo dos"
+            viejo = await memory.obtener_borrador(pendientes["573001"]["id"] - 1)
+            assert viejo["estado"] == "reemplazado" and viejo["resuelto_en"] is not None
+            vigente = await memory.obtener_borrador(pendientes["573002"]["id"])
+            assert abs(vigente["vence"] - (hace_1h + memory.VIGENCIA)) < timedelta(seconds=2)
+            prov = _ProvF5a()
+            # el pendiente de v0.8.11 (sin vence) se decide por WhatsApp
+            await borrador.comando_admin(prov, f"ok {pendientes['573002']['id']}")
+            assert prov.a("573002") == ["otro cliente"]
+            # el de hace 3 días ya venció: no se envía
+            await borrador.comando_admin(prov, f"ok {pendientes['573009']['id']}")
+            assert prov.a("573009") == [] and "venció" in prov.enviados[-1][1]
+            # y lo nuevo funciona sobre la base migrada
+            bid = await memory.crear_borrador("573003", "nuevo", "hola")
+            assert (await memory.obtener_borrador(bid))["mensajes"] == ["hola"]
+    finally:
+        await motor.dispose()
+
+
+def test_f5a_migracion_borradores():
+    asyncio.run(_test_f5a_migracion_borradores())
+
+
+def test_f5a_main_arranca_el_sondeo():
+    """main.lifespan arranca el sondeo de Telegram solo con el canal configurado, y solo saliente."""
+    import time
+    from unittest import mock
+    from fastapi.testclient import TestClient
+    from agentkit import telegram_borradores as t
+
+    with mock.patch.dict(os.environ, {"PROVIDER": "meta"}):
+        import agentkit.main as main_mod
+
+    class Telegram(_TelegramFalso):
+        async def __call__(self, metodo, datos, espera=10, tolerar=()):
+            await asyncio.sleep(0.01)  # getUpdates real espera; evita un bucle sin pausa
+            return await super().__call__(metodo, datos, espera, tolerar)
+
+    for canales, debe_sondear in (("telegram", True), (None, False)):
+        t._tarea = None
+        tg = Telegram()
+        with _f5a(tg, BORRADOR_CANALES=canales):
+            with TestClient(main_mod.app):
+                time.sleep(0.3)
+                if debe_sondear:
+                    assert t.iniciar(None) is t._tarea  # un solo sondeo por proceso
+            assert bool(tg.de("getUpdates")) is debe_sondear
+            assert not any(m in ("setWebhook", "deleteWebhook") for m, _ in tg.llamadas)  # sin webhook ni puerto
+            if debe_sondear:
+                assert tg.de("getUpdates")[0]["allowed_updates"] == ["message", "callback_query"]
+
+
+# ── F5a, vuelta 2 (revisión): mensajes, huérfanos, fallar cerrado, logs de proveedores ────
+
+async def _test_f5a_no_se_pierden_mensajes():
+    """RF-58: con un pendiente A y dos borradores creados a la vez (B y C) no se pierde ningún mensaje."""
+    from agentkit import memory
+
+    await memory.inicializar_db()
+    for _ in range(10):
+        tel = _tel()
+        await memory.crear_borrador(tel, "A", "m-a")
+        await asyncio.gather(memory.crear_borrador(tel, "B", "m-b"), memory.crear_borrador(tel, "C", "m-c"))
+        filas = await _filas_f5a(tel)
+        pendientes = [f for f in filas if f["estado"] == "pendiente"]
+        assert len(pendientes) == 1 and pendientes[0]["mensajes"][0] == "m-a", filas
+        assert sorted(pendientes[0]["mensajes"]) == ["m-a", "m-b", "m-c"], filas
+        # la cadena de reemplazos queda bien etiquetada: A → (B | C) → el último
+        reemplazados = [f for f in filas if f["estado"] == "reemplazado"]
+        assert len(reemplazados) == 2 and all(f["reemplazado_por"] for f in reemplazados)
+
+
+def test_f5a_no_se_pierden_mensajes():
+    asyncio.run(_test_f5a_no_se_pierden_mensajes())
+
+
+async def _test_f5a_huerfanos_enviando():
+    """Un borrador nunca queda en «enviando» sin rastro: si cancelan la tarea a mitad del envío pasa a
+    fallo_envio al instante; si el proceso murió, el barrido (cada minuto) lo pasa a fallo_envio a los 10 min
+    con un ERROR que cuenta en errores_24h y deja el aviso de Telegram sin botones."""
+    import logging
+    from datetime import datetime, timedelta
+    from agentkit import borrador, estado, memory
+
+    await memory.inicializar_db()
+    logging.getLogger("agentkit").addHandler(estado.contador_errores)
+    T0 = datetime(2031, 3, 1, 9, 0, 0)
+    reloj = [None]
+    with _f5a(ahora=lambda: reloj[0] or datetime.utcnow()) as tg, _logs() as logs:
+        # (a) cancelación a mitad del envío
+        tel = _tel()
+
+        class ProvLento(_ProvF5a):
+            async def enviar_mensaje(self, destino, texto):
+                if destino == tel:
+                    await asyncio.sleep(30)
+                return True
+
+        prov = ProvLento()
+        b = await _proponer_f5a(prov, tel)
+        tarea = asyncio.create_task(borrador.decidir(prov, b["id"], "enviar", canal="telegram",
+                                                     decidido_por="telegram:11"))
+        await asyncio.sleep(0.3)
+        assert (await _fila_f5a(tel))["estado"] == "enviando"
+        tarea.cancel()
+        try:
+            await tarea
+        except asyncio.CancelledError:
+            pass
+        assert (await _fila_f5a(tel))["estado"] == "fallo_envio"
+        assert any(n == "ERROR" and "cancelado" in m for n, m in logs)
+
+        # (b) el proceso murió a mitad del envío: lo recoge el barrido, no antes de 10 min
+        tel2 = _tel()
+        reloj[0] = T0
+        b2 = await _proponer_f5a(_ProvF5a(), tel2)
+        assert await memory.resolver_borrador(b2["id"], "enviando", ahora=T0)
+        antes = estado.contador_errores.contar_24h()
+        reloj[0] = T0 + timedelta(minutes=9)
+        await borrador.barrer_vencidos()
+        assert (await _fila_f5a(tel2))["estado"] == "enviando"
+        reloj[0] = T0 + timedelta(minutes=11)
+        await borrador.barrer_vencidos()
+        assert (await _fila_f5a(tel2))["estado"] == "fallo_envio"
+        assert estado.contador_errores.contar_24h() == antes + 1
+        assert any(n == "ERROR" and f"#{b2['id']} quedó a mitad del envío" in m for n, m in logs)
+        editado = [d for d in tg.de("editMessageText") if d["message_id"] == b2["tg_message_id"]][-1]
+        assert "no se pudo confirmar el envío" in editado["text"] and editado["reply_markup"] == {"inline_keyboard": []}
+        await borrador.barrer_vencidos()  # y no se repite
+        assert estado.contador_errores.contar_24h() == antes + 1
+
+
+def test_f5a_huerfanos_enviando():
+    asyncio.run(_test_f5a_huerfanos_enviando())
+
+
+def test_f5a_humanizar_corta_al_fallar():
+    """Si una burbuja falla no salen las siguientes (no queda un texto con huecos)."""
+    from unittest import mock
+    from agentkit import humanizar
+
+    texto = "\n\n".join(f"Párrafo {i} " + "relleno largo " * 12 for i in range(3))
+
+    class Prov:
+        def __init__(self, falla_en):
+            self.intentos, self.falla_en = [], falla_en
+
+        async def enviar_mensaje(self, tel, t):
+            self.intentos.append(t)
+            return len(self.intentos) != self.falla_en
+
+    with _entorno_f5a(HUMANIZAR="true"), mock.patch.object(humanizar, "pausa_escritura", lambda t: 0):
+        malo = Prov(falla_en=2)
+        assert asyncio.run(humanizar.enviar_humanizado(malo, "57300", texto)) is False
+        assert len(malo.intentos) == 2  # la tercera no se intentó
+        bueno = Prov(falla_en=0)
+        assert asyncio.run(humanizar.enviar_humanizado(bueno, "57300", texto)) is True and len(bueno.intentos) == 3
+        assert asyncio.run(humanizar.enviar_humanizado(Prov(0), "57300", "  ")) is False  # vacío: no se envió
+
+
+async def _test_f5a_base_no_vuelca_parametros():
+    """Un error de la base en el log no trae el texto ni el teléfono del cliente (hide_parameters)."""
+    import logging
+    from sqlalchemy import text
+    from sqlalchemy.exc import OperationalError
+    from agentkit import memory
+
+    await memory.inicializar_db()
+    with _logs() as logs:
+        try:
+            async with memory.async_session() as s:
+                await s.execute(text("INSERT INTO tabla_que_no_existe (a, b) VALUES (:a, :b)"),
+                                {"a": "SECRETO-TEXTO-DEL-CLIENTE", "b": "573001234567"})
+            raise AssertionError("debía fallar")
+        except OperationalError as e:
+            logging.getLogger("agentkit").exception(f"Error procesando mensaje: {e}")
+    texto = "\n".join(m for _, m in logs)
+    assert "tabla_que_no_existe" in texto  # el error sí queda...
+    assert "SECRETO-TEXTO-DEL-CLIENTE" not in texto and "573001234567" not in texto  # ...sin los valores
+
+
+def test_f5a_base_no_vuelca_parametros():
+    asyncio.run(_test_f5a_base_no_vuelca_parametros())
+
+
+def test_f5a_logs_de_proveedores_sin_cuerpo():
+    """Los errores de Meta e Instagram registran HTTP + código, nunca el cuerpo de la respuesta."""
+    from unittest import mock
+    from agentkit.providers.instagram import ProveedorInstagram
+    from agentkit.providers.meta import ProveedorMeta
+
+    class Resp:
+        text = "SECRETO-CUERPO 573001112233"
+
+        def __init__(self, status, json_ok=True):
+            self.status_code, self._json_ok = status, json_ok
+
+        def json(self):
+            if not self._json_ok:
+                raise ValueError("no es JSON")
+            return {"error": {"code": 190, "message": "SECRETO-CUERPO"}}
+
+    estado_http = {"r": Resp(400)}
+
+    class Cliente:
+        def __init__(self, *a, **k): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def post(self, *a, **k): return estado_http["r"]
+        async def get(self, *a, **k): return estado_http["r"]
+
+    async def todo():
+        meta, ig = ProveedorMeta(), ProveedorInstagram()
+        for provedor_, llamada in ((meta, lambda p: p.enviar_mensaje("57300", "hola")),
+                                   (meta, lambda p: p.enviar_audio_url("57300", "https://x/a.mp3")),
+                                   (meta, lambda p: p.descargar_audio("mediaid")),
+                                   (ig, lambda p: p.enviar_mensaje("1784", "hola"))):
+            await llamada(provedor_)
+
+    with mock.patch.dict(os.environ, {"META_ACCESS_TOKEN": "tok", "META_PHONE_NUMBER_ID": "1", "IG_ACCESS_TOKEN": "tok"}), \
+            mock.patch("httpx.AsyncClient", Cliente), _logs() as logs:
+        asyncio.run(todo())
+        estado_http["r"] = Resp(500, json_ok=False)  # cuerpo que ni siquiera es JSON
+        asyncio.run(todo())
+    errores = [m for n, m in logs if n == "ERROR"]
+    assert len(errores) == 8
+    assert all("SECRETO" not in m and "573001112233" not in m for m in errores)
+    assert any("HTTP 400" in m and "190" in m for m in errores) and any("HTTP 500" in m for m in errores)
+
+
+async def _test_f5a_notificar_en_instagram():
+    """En Instagram el aviso del equipo nunca sale por el proveedor hacia ADMIN_PHONE (no es un IGSID);
+    sin Telegram queda una advertencia al arrancar. En Meta sigue llegando a ADMIN_PHONE."""
+    from unittest import mock
+    from agentkit import notificar
+
+    llamadas = []
+
+    class Resp:
+        status_code = 200
+
+    class Cliente:
+        def __init__(self, *a, **k): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def post(self, url, data):
+            llamadas.append(data); return Resp()
+
+    with _entorno_f5a(PROVIDER="instagram", TELEGRAM_TOKEN=None, TELEGRAM_CHAT_ID=None), _logs() as logs:
+        prov = _ProvF5a()
+        notificar.advertir_config()
+        assert any(n == "WARNING" and "instagram" in m.lower() for n, m in logs)
+        assert await notificar.notificar_equipo(prov, "aviso") is False and prov.enviados == []
+    with _entorno_f5a(PROVIDER="instagram"), mock.patch.object(notificar.httpx, "AsyncClient", Cliente), _logs() as logs:
+        prov = _ProvF5a()
+        notificar.advertir_config()
+        assert not any(n == "WARNING" for n, _ in logs)  # con Telegram hay canal
+        assert await notificar.notificar_equipo(prov, "aviso") is True
+        assert prov.enviados == [] and llamadas == [{"chat_id": "-1001", "text": "aviso"}]
+    with _entorno_f5a(PROVIDER="meta", TELEGRAM_TOKEN=None, TELEGRAM_CHAT_ID=None):
+        prov = _ProvF5a()
+        assert await notificar.notificar_equipo(prov, "aviso") is True and prov.enviados == [(_ADMIN_F5A, "aviso")]
+
+
+def test_f5a_notificar_en_instagram():
+    asyncio.run(_test_f5a_notificar_en_instagram())
+
+
+async def _test_f5a_avisos_de_derivar_con_telefono_completo():
+    """Derivar a humano (herramienta y tope de gasto) avisa con el teléfono COMPLETO: el equipo lo necesita para
+    contactar al cliente (decisión de Nicolas, 2026-10-19). Solo el aviso del borrador va enmascarado."""
+    from unittest import mock
+    from agentkit import herramientas, memory, notificar, tope
+
+    await memory.inicializar_db()
+    avisos = []
+
+    async def falso(_prov, texto):
+        avisos.append(texto); return True
+
+    tel = _tel()
+    with mock.patch.object(notificar, "notificar_equipo", falso):
+        _, ejecutar = herramientas.obtener_herramientas(tel, None)
+        await ejecutar("derivar_a_humano", {"motivo": "quiere hablar"})
+        tel2 = _tel()
+        await tope.derivar(_ProvF5a(), tel2)
+    assert len(avisos) == 2 and tel in avisos[0] and tel2 in avisos[1]
+
+
+def test_f5a_avisos_de_derivar_con_telefono_completo():
+    asyncio.run(_test_f5a_avisos_de_derivar_con_telefono_completo())
+
+
+def test_f5a_telegram_sin_vista_previa_de_enlaces():
+    """sendMessage y editMessageText van con link_preview_options.is_disabled (un enlace del cliente no se
+    abre solo en el chat de aprobadores; sigue siendo clicable). Las demás llamadas no lo llevan."""
+    from unittest import mock
+    from agentkit import telegram_borradores as t
+
+    capturado = []
+
+    class Resp:
+        status_code = 200
+        def json(self):
+            return {"ok": True, "result": {"message_id": 1}}
+
+    class Cliente:
+        def __init__(self, *a, **k): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def post(self, url, json=None):
+            capturado.append((url.rsplit("/", 1)[-1], json)); return Resp()
+
+    with _entorno_f5a(), mock.patch.object(t.httpx, "AsyncClient", Cliente):
+        asyncio.run(t._llamar("sendMessage", {"chat_id": -1001, "text": "https://ejemplo.test"}))
+        asyncio.run(t._llamar("editMessageText", {"chat_id": -1001, "message_id": 1, "text": "x"}))
+        asyncio.run(t._llamar("getUpdates", {"timeout": 1}))
+    previas = {m: d for m, d in capturado}
+    assert previas["sendMessage"]["link_preview_options"] == {"is_disabled": True}
+    assert previas["editMessageText"]["link_preview_options"] == {"is_disabled": True}
+    assert "link_preview_options" not in previas["getUpdates"] and "parse_mode" not in str(capturado)
+
+
+async def _test_f5a_whatsapp_editar_respeta_el_limite():
+    """`editar N <texto>` por WhatsApp rechaza (con aviso al admin) lo que no cabe en un mensaje."""
+    from agentkit import borrador, memory
+
+    await memory.inicializar_db()
+    with _f5a(BORRADOR_CANALES="whatsapp"):
+        prov = _ProvF5a()
+        b = await _proponer_f5a(prov)
+        await borrador.comando_admin(prov, f"editar {b['id']} " + "x" * 4097)
+        assert prov.a(b["telefono"]) == [] and "4097" in prov.enviados[-1][1] and "4096" in prov.enviados[-1][1]
+        assert (await _fila_f5a(b["telefono"]))["estado"] == "pendiente"
+        await borrador.comando_admin(prov, f"editar {b['id']} " + "x" * 4096)
+        assert prov.a(b["telefono"]) == ["x" * 4096]
+
+
+def test_f5a_whatsapp_editar_respeta_el_limite():
+    asyncio.run(_test_f5a_whatsapp_editar_respeta_el_limite())
+
+
+def test_f5a_sondeo_espera_y_alarma():
+    """Sin red la espera crece hasta 60 s; a la tercera respuesta 401/404 seguida queda un ERROR (token
+    inválido o revocado), como con el 409; un 200 reinicia las cuentas."""
+    import logging
+    from agentkit import estado, telegram_borradores as t
+
+    logging.getLogger("agentkit").addHandler(estado.contador_errores)
+
+    class Secuencia(_TelegramFalso):
+        def __init__(self, codigos):
+            super().__init__()
+            self.codigos = list(codigos)
+
+        async def __call__(self, metodo, datos, espera=10, tolerar=()):
+            self.llamadas.append((metodo, datos))
+            c = self.codigos.pop(0)
+            return c, ({"ok": True, "result": []} if c == 200 else None)
+
+    async def vueltas(codigos):
+        est = {"offset": None, "conflictos": 0, "rechazos": 0, "caidas": 0}
+        with _f5a(Secuencia(codigos)):
+            return [await t._una_vuelta(_ProvF5a(), est) for _ in codigos]
+
+    assert asyncio.run(vueltas([0] * 6 + [200, 0])) == [5, 10, 20, 40, 60, 60, 0, 5]
+    for codigo in (401, 404):
+        with _logs() as logs:
+            antes = estado.contador_errores.contar_24h()
+            esperas = asyncio.run(vueltas([codigo, codigo]))
+            assert not any(n == "ERROR" for n, _ in logs)
+            esperas += asyncio.run(vueltas([codigo] * 3))[2:]  # contador nuevo: 3 seguidos
+            assert [n for n, _ in logs].count("ERROR") == 1 and str(codigo) in logs[-1][1]
+            assert estado.contador_errores.contar_24h() == antes + 1
+        assert esperas[:2] == [5, 10]
+
+
+def test_f5a_aviso_se_parte_en_utf16():
+    """El largo se mide en UTF-16 (un emoji vale 2): ninguna parte pasa del tope aunque tenga emojis."""
+    from agentkit import telegram_borradores as t
+
+    texto = "\n".join("😀" * 50 + f" línea {i}" for i in range(150))  # unas 15.000 unidades UTF-16
+    partes = t._partir(texto, 4000)
+    assert len(partes) >= 4 and "".join(partes) == texto
+    assert all(t._utf16(p) <= 4000 for p in partes), [t._utf16(p) for p in partes]
+    # y sin saltos de línea también se corta, sin partir un emoji
+    largo = "😀" * 5000
+    partes = t._partir(largo, 4000)
+    assert "".join(partes) == largo and all(t._utf16(p) <= 4000 for p in partes)
+    avisos = t.armar_aviso(1, "Cliente · …1234", ["hola"], texto)
+    assert all(t._utf16(p) <= 4000 for p in avisos)
+
+
 if __name__ == "__main__":
     test_humanizar()
     test_notificar_telegram_y_sin_canal()
@@ -2311,4 +3661,33 @@ if __name__ == "__main__":
     asyncio.run(_test_dedup_mensajes_procesados())
     test_webhook_dedup_en_base()
     test_constraints_fija_todas_las_dependencias()
+    test_f5a_regresion_sin_canales()
+    test_f5a_autorizacion()
+    test_f5a_mapeo_por_chat_y_mensaje()
+    test_f5a_carrera_entre_canales()
+    test_f5a_envio_enviando_y_fallo()
+    test_f5a_editar_con_confirmacion()
+    test_f5a_updates_ignorados()
+    test_f5a_vencimiento_y_estados()
+    test_f5a_un_solo_pendiente()
+    test_f5a_canal_telegram_sin_config()
+    test_f5a_instagram()
+    test_f5a_logs_sin_datos()
+    test_f5a_dos_agentes()
+    test_f5a_aviso_privacidad_y_partes()
+    test_f5a_ningun_borrador_se_pierde()
+    test_f5a_conflicto_409()
+    test_f5a_migracion_borradores()
+    test_f5a_main_arranca_el_sondeo()
+    test_f5a_no_se_pierden_mensajes()
+    test_f5a_huerfanos_enviando()
+    test_f5a_humanizar_corta_al_fallar()
+    test_f5a_base_no_vuelca_parametros()
+    test_f5a_logs_de_proveedores_sin_cuerpo()
+    test_f5a_notificar_en_instagram()
+    test_f5a_avisos_de_derivar_con_telefono_completo()
+    test_f5a_telegram_sin_vista_previa_de_enlaces()
+    test_f5a_whatsapp_editar_respeta_el_limite()
+    test_f5a_sondeo_espera_y_alarma()
+    test_f5a_aviso_se_parte_en_utf16()
     print("OK — todos los self-checks pasaron")
